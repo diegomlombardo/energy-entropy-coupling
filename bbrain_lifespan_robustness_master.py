@@ -1,16 +1,5 @@
 # ============================================================
 # Q1 ENERGY-CONSTRAINED COGNITION PIPELINE
-# - Cognition = perturbation recovery only
-# - Linear metabolic decline only
-# - Explicit energy reservoir
-# - No entropy targets
-# - No imposed quadratic lifespan
-# - ECM vs FEP competition
-# - 10-fold CV
-# - Permutation inference
-# - Multi-seed robustness
-# - Regime divergence
-# - Mediation analysis
 # ============================================================
 
 import numpy as np
