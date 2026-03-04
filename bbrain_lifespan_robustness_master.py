@@ -1,243 +1,295 @@
-# ============================================================
-# Q1 CROSS-WORLD EECI SIMULATION - PUBLICATION READY
-# ============================================================
-
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
+from dataclasses import dataclass
+from sklearn.linear_model import Ridge, LinearRegression
+from sklearn.model_selection import GroupKFold
+from sklearn.metrics import r2_score
+from sklearn.preprocessing import StandardScaler
 import seaborn as sns
-from sklearn.linear_model import LinearRegression
-from sklearn.model_selection import cross_val_score, KFold
-import os
-
-sns.set(style="whitegrid", context="talk")
-np.random.seed(42)
-
-FIG_FOLDER = "./figures_q1"
-os.makedirs(FIG_FOLDER, exist_ok=True)
+import matplotlib.pyplot as plt
 
 # ============================================================
-# 1. CONNECTIVITY
+# CONFIG
 # ============================================================
 
-def create_connectivity(N=40):
-    """Random symmetric connectivity matrix normalized for stability."""
-    C = np.random.rand(N, N)
-    C = (C + C.T) / 2
-    np.fill_diagonal(C, 0)
-    return C / np.max(np.abs(np.linalg.eigvals(C)))
+@dataclass
+class Config:
+    n_subjects: int = 120
+    timepoints: int = 20
+    n_regions: int = 35
+    dt: float = 0.05
+    base_kappa: float = 0.5
+    seeds: int = 50
+    permutations: int = 500
+    n_splits: int = 5
+    noise_scale: float = 1.0
+    kappa_sweep: tuple = (0.3,0.5,0.7)
+
+CFG = Config()
+np.seterr(all="raise")
+WORLDS = ["energy","predictive","mixed","null"]
 
 # ============================================================
-# 2. MECHANISTIC ENERGY & PREDICTIVE DYNAMICS
+# CONNECTOME / SUBJECT SIMULATION
 # ============================================================
 
-def simulate_EECI(C, age):
-    N = C.shape[0]
-    z = np.random.randn(N)
-    reservoir = max(0.1, 1.5 * np.exp(-0.02 * age))
-    for _ in range(200):
-        neural_energy = np.mean(z**2)
-        delta = 0.05 * (0.5 - 0.6*neural_energy - 0.05*reservoir)
-        z = np.clip(z + 0.1*(C@z - z) - (1/reservoir)*z + np.random.randn(N)*0.01, -1e2, 1e2)
-        reservoir = np.clip(reservoir + delta, 0.01, 5)
-    return z
+def spectral_normalize(W):
+    eigvals = np.linalg.eigvals(W)
+    rho = np.max(np.abs(eigvals))
+    return W / (rho + 1e-8)
 
-def simulate_PPI(C, age):
-    N = C.shape[0]
-    z = np.random.randn(N)
-    for _ in range(200):
-        prediction = C @ z
-        z = np.clip(z - 0.8*(z - prediction) + np.random.randn(N)*0.01, -1e2, 1e2)
-    return z
+def generate_connectome(rng,n):
+    W = rng.normal(0,1,(n,n))
+    W = (W + W.T)/2
+    return spectral_normalize(W)
 
-# ============================================================
-# 3. COGNITION GENERATION (NON-CIRCULAR)
-# ============================================================
+def simulate_subject(world,rng,cfg,kappa_scale=1.0):
+    W = generate_connectome(rng,cfg.n_regions)
+    z = rng.normal(0,0.4,cfg.n_regions)
+    rows=[]
+    for t in range(cfg.timepoints):
+        age = 20 + t*3
+        kappa = cfg.base_kappa * kappa_scale
+        dz = W @ z - kappa*z
+        z = np.tanh(z + cfg.dt*dz)
 
-def generate_cognition(world, eeci, ppi, snr=3):
-    """
-    Cognition partially depends on EECI/PPI with reduced weight + independent noise
-    to avoid circularity.
-    """
-    weights = {"energy": 0.3, "predictive": 0.3, "mixed": 0.15}  # reduced influence
-    signal = {
-        "energy": weights["energy"]*np.mean(eeci),
-        "predictive": weights["predictive"]*np.mean(ppi),
-        "mixed": weights["mixed"]*np.mean(eeci) + weights["mixed"]*np.mean(ppi)
-    }.get(world, None)
-    
-    if signal is None:
-        raise ValueError("Unknown world type")
-    
-    noise_var = np.var([signal])/snr + 1e-8
-    independent_noise = np.random.randn() * np.sqrt(noise_var) + np.random.randn()*0.5
-    return signal + independent_noise
+        energy = np.mean(z**2)
+        pred_error = np.var(W @ z - z)
 
-# ============================================================
-# 4. LONGITUDINAL DATASET
-# ============================================================
+        if world=="energy":
+            cognition = np.exp(energy)
+            pred_error = rng.normal(0,1)
+        elif world=="predictive":
+            cognition = np.tanh(pred_error)
+            energy = rng.normal(0,1)
+        elif world=="mixed":
+            cognition = np.exp(energy) + np.tanh(pred_error)
+        elif world=="null":
+            cognition = rng.normal(0,1)
+            energy = rng.normal(0,1)
+            pred_error = rng.normal(0,1)
 
-def generate_longitudinal(world, n_subjects=80, n_timepoints=5, seed=None):
-    if seed is not None:
-        np.random.seed(seed)
-    C = create_connectivity()
-    rows = []
-    for subj in range(n_subjects):
-        baseline_age = np.random.uniform(10, 60)
-        for t in range(n_timepoints):
-            age = baseline_age + 5*t
-            eeci_vec = simulate_EECI(C, age)
-            ppi_vec = simulate_PPI(C, age)
-            cog = generate_cognition(world, eeci_vec, ppi_vec)
-            rows.append([subj, t, age, np.mean(eeci_vec), np.mean(ppi_vec), cog])
-    return pd.DataFrame(rows, columns=["ID", "Time", "Age", "EECI", "PPI", "Cog"])
+        cognition += rng.normal(0,cfg.noise_scale)
+        rows.append([age,energy,pred_error,cognition])
+        z += rng.normal(0,0.05,cfg.n_regions)
+    return rows
+
+def generate_dataset(world,seed,cfg,kappa_scale=1.0):
+    rng = np.random.default_rng(seed)
+    data=[]
+    for s in range(cfg.n_subjects):
+        subject_rows = simulate_subject(world,rng,cfg,kappa_scale)
+        for row in subject_rows:
+            data.append([s]+row)
+    return pd.DataFrame(data,columns=["subject","age","energy","pred_error","cognition"])
 
 # ============================================================
-# 5. REGRESSION ANALYSIS WITH MODEL COMPARISON
+# CROSS-SECTIONAL AND LONGITUDINAL
 # ============================================================
 
-def cross_world_regression(df):
-    X = df[["EECI","PPI","Age"]].copy()
-    X["Age2"] = X["Age"]**2
-    Y = df["Cog"].values
-    valid = ~np.isnan(Y) & X.notna().all(axis=1)
-    X_s = X.loc[valid].values
-    Y_s = Y[valid]
+def cross_sectional_r2(df,cfg):
+    X = df[["energy","pred_error"]].values
+    y = df["cognition"].values
+    groups = df["subject"].values
+    X = StandardScaler().fit_transform(X)
+    gkf = GroupKFold(n_splits=cfg.n_splits)
+    r2_scores=[]
+    betas=[]
+    for tr,te in gkf.split(X,y,groups):
+        model = Ridge(alpha=1.0)
+        model.fit(X[tr],y[tr])
+        pred = model.predict(X[te])
+        r2_scores.append(r2_score(y[te],pred))
+        betas.append(model.coef_)
+    return np.mean(r2_scores), np.mean(betas,axis=0)
 
-    model_full = LinearRegression().fit(X_s, Y_s)
-    r2_full = model_full.score(X_s, Y_s)
-    
-    model_red = LinearRegression().fit(X_s[:,1:], Y_s)
-    r2_red = model_red.score(X_s[:,1:], Y_s)
-    delta_r2 = r2_full - r2_red
-    
-    # AIC / BIC (assuming Gaussian residuals)
-    n = len(Y_s)
-    k_full = X_s.shape[1]
-    resid = Y_s - model_full.predict(X_s)
-    sse = np.sum(resid**2)
-    aic = n * np.log(sse/n) + 2*k_full
-    bic = n * np.log(sse/n) + k_full*np.log(n)
-    
-    # Cross-validated R²
-    cv = KFold(n_splits=5, shuffle=True, random_state=42)
-    cv_r2 = np.mean(cross_val_score(model_full, X_s, Y_s, cv=cv, scoring="r2"))
-
-    return dict(
-        Beta_EECI=model_full.coef_[0],
-        Beta_PPI=model_full.coef_[1],
-        Beta_Age=model_full.coef_[2],
-        Beta_Age2=model_full.coef_[3],
-        Intercept=model_full.intercept_,
-        R2=r2_full,
-        Delta_R2=delta_r2,
-        AIC=aic,
-        BIC=bic,
-        CV_R2=cv_r2
-    )
+def longitudinal_vulnerability(df):
+    slopes=[]
+    early_energy=[]
+    for s in df.subject.unique():
+        sub = df[df.subject==s]
+        model = LinearRegression()
+        model.fit(sub[["age"]],sub["cognition"])
+        slope = model.coef_[0]
+        early_energy.append(sub[sub.age<40]["energy"].mean())
+        slopes.append(-slope)
+    dfv=pd.DataFrame({"early_energy":early_energy,"vulnerability":slopes})
+    model = LinearRegression().fit(dfv[["early_energy"]],dfv["vulnerability"])
+    return model.score(dfv[["early_energy"]],dfv["vulnerability"])
 
 # ============================================================
-# 6. ROBUSTNESS ACROSS MULTIPLE SEEDS
+# PERMUTATION TEST
 # ============================================================
 
-def run_robustness(seeds=50):
-    results = []
-    print(f"Running robustness analysis with {seeds} seeds...\n")
-    for world in ["energy","predictive","mixed"]:
-        for seed in range(seeds):
-            df = generate_longitudinal(world, seed=seed)
-            res = cross_world_regression(df)
-            res["World"] = world
-            res["Seed"] = seed
-            results.append(res)
-        print(f"  Completed world: {world}")
-    return pd.DataFrame(results)
+def permutation_test(df,true_r2,cfg,seed):
+    rng = np.random.default_rng(seed)
+    subjects = np.unique(df.subject.values)
+    null_scores=[]
+    for _ in range(cfg.permutations):
+        shuffled = rng.permutation(subjects)
+        mapping = dict(zip(subjects,shuffled))
+        df_perm = df.copy()
+        for orig,new in mapping.items():
+            df_perm.loc[df.subject==orig,"cognition"]=df[df.subject==new]["cognition"].values
+        r2,_ = cross_sectional_r2(df_perm,cfg)
+        null_scores.append(r2)
+    null_scores = np.array(null_scores)
+    pval = (np.sum(null_scores>=true_r2)+1)/(len(null_scores)+1)
+    return pval
 
 # ============================================================
-# 7. DISCRIMINANT VALIDITY
+# IDENTIFY WORLD
 # ============================================================
 
-def discriminant_validity(df):
-    corr_matrix = df[["EECI","PPI"]].corr()
-    print("\nDiscriminant validity (correlation between EECI and PPI):")
-    print(corr_matrix)
-    return corr_matrix
+def identify_world(beta):
+    bE,bP = beta
+    if abs(bE)>abs(bP)*1.5: return "energy"
+    if abs(bP)>abs(bE)*1.5: return "predictive"
+    if abs(bE)>0.1 and abs(bP)>0.1: return "mixed"
+    return "null"
 
 # ============================================================
-# 8. PLOTTING FUNCTIONS
+# EVALUATE WORLD
 # ============================================================
 
-def plot_beta_distributions(df_results):
-    plt.figure(figsize=(8,6))
-    sns.boxplot(x="World", y="Beta_EECI", data=df_results, palette="Set2")
-    plt.title("Distribution of EECI Beta Coefficients Across Worlds")
-    plt.savefig(os.path.join(FIG_FOLDER,"beta_eeci.png"), dpi=300)
-    plt.close()
-
-    plt.figure(figsize=(8,6))
-    sns.boxplot(x="World", y="Beta_Age2", data=df_results, palette="Set3")
-    plt.title("Distribution of Quadratic Age Coefficients Across Worlds")
-    plt.savefig(os.path.join(FIG_FOLDER,"beta_age2.png"), dpi=300)
-    plt.close()
-
-def plot_longitudinal_trajectories(world, n_subjects=20, n_timepoints=5):
-    df = generate_longitudinal(world, n_subjects=n_subjects, n_timepoints=n_timepoints, seed=42)
-    plt.figure(figsize=(8,6))
-    sns.lineplot(x="Age", y="EECI", hue="ID", data=df, alpha=0.5, legend=False)
-    sns.lineplot(x="Age", y="EECI", data=df.groupby("Age").mean().reset_index(), color="black", lw=3)
-    plt.title(f"Longitudinal EECI trajectories ({world} world)")
-    plt.savefig(os.path.join(FIG_FOLDER,f"trajectories_EECI_{world}.png"), dpi=300)
-    plt.close()
-
-    plt.figure(figsize=(8,6))
-    sns.lineplot(x="Age", y="Cog", hue="ID", data=df, alpha=0.5, legend=False)
-    sns.lineplot(x="Age", y="Cog", data=df.groupby("Age").mean().reset_index(), color="black", lw=3)
-    plt.title(f"Longitudinal Cognition trajectories ({world} world)")
-    plt.savefig(os.path.join(FIG_FOLDER,f"trajectories_Cog_{world}.png"), dpi=300)
-    plt.close()
+def evaluate_world(world,cfg):
+    cross_r2_list,long_r2_list,perm_sig_list,predicted_worlds=[],[],[],[]
+    for seed in range(cfg.seeds):
+        df=generate_dataset(world,seed,cfg)
+        r2_cross,beta = cross_sectional_r2(df,cfg)
+        r2_long = longitudinal_vulnerability(df)
+        p = permutation_test(df,r2_cross,cfg,seed+999)
+        predicted = identify_world(beta)
+        cross_r2_list.append(r2_cross)
+        long_r2_list.append(r2_long)
+        perm_sig_list.append(p<0.05)
+        predicted_worlds.append(predicted)
+    return {
+        "world":world,
+        "cross_R2_mean":np.mean(cross_r2_list),
+        "long_R2_mean":np.mean(long_r2_list),
+        "perm_sig_rate":np.mean(perm_sig_list),
+        "predicted_worlds":predicted_worlds,
+        "cross_R2_se":np.std(cross_r2_list),
+        "long_R2_se":np.std(long_r2_list)
+    }
 
 # ============================================================
-# 9. MAIN
+# CROSS-WORLD MATRIX
 # ============================================================
 
-if __name__ == "__main__":
-    # Run multi-seed robustness
-    df_results = run_robustness(seeds=20)  # adjust seeds for publication
-    print("\nRobustness analysis completed.")
+def cross_world_matrix(cfg):
+    matrix={}
+    for w1 in WORLDS:
+        for w2 in WORLDS:
+            r2s=[]
+            for seed in range(cfg.seeds):
+                df_train = generate_dataset(w1,seed,cfg)
+                df_test = generate_dataset(w2,seed+999,cfg)
+                X_train = StandardScaler().fit_transform(df_train[["energy","pred_error"]])
+                y_train = df_train["cognition"].values
+                X_test = StandardScaler().fit_transform(df_test[["energy","pred_error"]])
+                y_test = df_test["cognition"].values
+                model = Ridge(alpha=1.0).fit(X_train,y_train)
+                pred = model.predict(X_test)
+                r2s.append(r2_score(y_test,pred))
+            matrix[(w1,w2)] = np.mean(r2s)
+    return matrix
 
-    # Summary table
-    summary = df_results.groupby("World").agg(
-        Beta_EECI_mean=("Beta_EECI","mean"),
-        Beta_EECI_lower=("Beta_EECI", lambda x: np.percentile(x, 2.5)),
-        Beta_EECI_upper=("Beta_EECI", lambda x: np.percentile(x, 97.5)),
-        Beta_PPI_mean=("Beta_PPI","mean"),
-        Beta_PPI_lower=("Beta_PPI", lambda x: np.percentile(x, 2.5)),
-        Beta_PPI_upper=("Beta_PPI", lambda x: np.percentile(x, 97.5)),
-        Beta_Age_mean=("Beta_Age","mean"),
-        Beta_Age_lower=("Beta_Age", lambda x: np.percentile(x, 2.5)),
-        Beta_Age_upper=("Beta_Age", lambda x: np.percentile(x, 97.5)),
-        Beta_Age2_mean=("Beta_Age2","mean"),
-        Beta_Age2_lower=("Beta_Age2", lambda x: np.percentile(x, 2.5)),
-        Beta_Age2_upper=("Beta_Age2", lambda x: np.percentile(x, 97.5)),
-        Delta_R2_mean=("Delta_R2","mean"),
-        Delta_R2_lower=("Delta_R2", lambda x: np.percentile(x, 2.5)),
-        Delta_R2_upper=("Delta_R2", lambda x: np.percentile(x, 97.5)),
-        AIC_mean=("AIC","mean"),
-        BIC_mean=("BIC","mean"),
-        CV_R2_mean=("CV_R2","mean")
-    )
-    print("\nSummary Table (mean ± 95% CI):")
-    print(summary)
+# ============================================================
+# PARAMETER SWEEP
+# ============================================================
 
-    # Plot beta distributions
-    plot_beta_distributions(df_results)
+def parameter_sweep(cfg):
+    rows=[]
+    for k in cfg.kappa_sweep:
+        df = generate_dataset("energy",0,cfg,kappa_scale=k)
+        rows.append({"kappa_scale":k,"mean_energy":df.energy.mean()})
+    return pd.DataFrame(rows)
 
-    # Plot longitudinal trajectories for all worlds
-    for world in ["energy","predictive","mixed"]:
-        plot_longitudinal_trajectories(world, n_subjects=20)
-    
-    # Discriminant validity
-    df_example = generate_longitudinal("energy", n_subjects=50, n_timepoints=5, seed=42)
-    discriminant_validity(df_example)
+# ============================================================
+# PLOT & SUMMARY
+# ============================================================
 
-    print(f"\nAll figures saved in: {FIG_FOLDER}")
+def plot_summary(all_results,cw_matrix,param_df):
+    # Table
+    summary=[]
+    for r in all_results:
+        summary.append({
+            "World":r["world"],
+            "Cross-sectional R²":r["cross_R2_mean"],
+            "Cross-sectional SE":r["cross_R2_se"],
+            "Longitudinal R²":r["long_R2_mean"],
+            "Longitudinal SE":r["long_R2_se"],
+            "Permutation (%)":r["perm_sig_rate"]*100,
+            "Recovery (%)":np.mean([r["world"]==p for p in r["predicted_worlds"]])*100
+        })
+    summary_df = pd.DataFrame(summary)
+    print("\n=== SUMMARY TABLE ===\n")
+    print(summary_df.to_string(index=False))
+
+    # Figures style
+    sns.set(style="whitegrid",context="talk",palette="Set2")
+
+    # Cross-sectional
+    plt.figure(figsize=(6,4))
+    sns.barplot(x="World",y="Cross-sectional R²",data=summary_df,yerr=summary_df["Cross-sectional SE"])
+    plt.title("Cross-sectional cognition prediction")
+    plt.ylim(0,1)
+    plt.tight_layout()
+    plt.savefig("cross_sectional_R2.png",dpi=300)
+    plt.show()
+
+    # Longitudinal vulnerability
+    plt.figure(figsize=(6,4))
+    sns.barplot(x="World",y="Longitudinal R²",data=summary_df,yerr=summary_df["Longitudinal SE"])
+    plt.title("Longitudinal vulnerability (Energy → decline)")
+    plt.ylim(0,1)
+    plt.tight_layout()
+    plt.savefig("longitudinal_R2.png",dpi=300)
+    plt.show()
+
+    # Cross-world heatmap
+    cw_df=pd.DataFrame([[cw_matrix[(w1,w2)] for w2 in WORLDS] for w1 in WORLDS],index=WORLDS,columns=WORLDS)
+    plt.figure(figsize=(6,5))
+    sns.heatmap(cw_df,annot=True,fmt=".2f",cmap="coolwarm",cbar_kws={"label":"R²"})
+    plt.title("Cross-world generalization")
+    plt.tight_layout()
+    plt.savefig("cross_world_R2.png",dpi=300)
+    plt.show()
+
+    # Parameter sweep
+    plt.figure(figsize=(6,4))
+    sns.lineplot(x="kappa_scale",y="mean_energy",data=param_df,marker="o")
+    plt.title("Parameter sweep: κ vs mean energy")
+    plt.xlabel("Kappa scale")
+    plt.ylabel("Mean energy")
+    plt.tight_layout()
+    plt.savefig("parameter_sweep.png",dpi=300)
+    plt.show()
+
+    return summary_df
+
+# ============================================================
+# MAIN
+# ============================================================
+
+if __name__=="__main__":
+    all_results=[]
+    for w in WORLDS:
+        res = evaluate_world(w,CFG)
+        all_results.append(res)
+
+    cw = cross_world_matrix(CFG)
+    param_df = parameter_sweep(CFG)
+
+    summary_df = plot_summary(all_results,cw,param_df)
+
+    # Proof-of-concept: energy predicts cognition vs predictive/null
+    print("\n=== PROOF-OF-CONCEPT TEST: ENERGY vs OTHER WORLDS ===\n")
+    for w in ["energy","predictive","null"]:
+        df = generate_dataset(w,0,CFG)
+        X = df[["energy"]].values
+        y = df["cognition"].values
+        r2 = LinearRegression().fit(X,y).score(X,y)
+        print(f"{w.capitalize()} world: R² (energy → cognition) = {r2:.3f}")
