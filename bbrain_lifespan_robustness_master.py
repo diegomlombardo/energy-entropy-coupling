@@ -1,7 +1,5 @@
 # ============================================================
 # Q1 POWER-CALIBRATED CONSTRUCT VALIDATION
-# No circularity
-# Explicit signal-to-noise control
 # ============================================================
 
 import numpy as np
