@@ -1,251 +1,226 @@
-# ============================================================
-# brain_lifespan_ecm_world_pipeline.py
-# ============================================================
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Brain-Body Lifespan ECM vs FEP Pipeline
+Q1 Publication-ready, in-silico experiments
+"""
 
 import numpy as np
 import pandas as pd
-from sklearn.linear_model import LinearRegression, Ridge
-from sklearn.preprocessing import StandardScaler
-from sklearn.model_selection import KFold
-from sklearn.metrics import r2_score
-from sklearn.utils import resample
 from scipy.stats import rankdata, norm
+from sklearn.linear_model import LinearRegression
+from sklearn.model_selection import KFold
+from sklearn.utils import resample
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import r2_score
 import matplotlib.pyplot as plt
 import seaborn as sns
+import statsmodels.api as sm
+import statsmodels.formula.api as smf
 import warnings
-
 warnings.filterwarnings("ignore")
-sns.set(style="whitegrid", context="talk", palette="colorblind")
 
-# ============================================================
-# 1. CONNECTIVITY MATRIX GENERATOR
-# ============================================================
-def generate_connectivity(N=40, seed=None):
-    if seed is not None:
-        np.random.seed(seed)
-    C = np.random.rand(N, N)
-    C = (C + C.T)/2
-    np.fill_diagonal(C, 0)
-    C = C / np.max(np.abs(np.linalg.eigvals(C)))
-    return C
-
-# ============================================================
-# 2. ECM SIMULATION (ENERGY-CONSTRAINED, STRESSED)
-# ============================================================
-def simulate_ECM(C, age, T=350, dt=0.02, alpha0=1.2, metabolic_decline=0.02,
-                 beta=0.6, delta=0.05, kappa=2.5, noise=0.02):
-    N = C.shape[0]
+# ================================
+# 1. SIMULATION FUNCTIONS
+# ================================
+def simulate_brain_body(N=40, T=500, dt=0.02, G=0.2, noise=0.02, lambda_body=0.05):
+    """Simulate neural and body dynamics, return complex Z and physiological P"""
     omega = np.random.uniform(0.04, 0.07, N)
-    z = np.random.randn(N) + 1j*np.random.randn(N)
-    E = 1.0
-    alpha = alpha0 - metabolic_decline*age
-    row_sums = np.sum(C, axis=1)
-    timepoints = int(T/dt)
-    perturb_time = int(0.4*timepoints)
-    threshold = 1.0
-    recovered = False
-    recovery_time = timepoints
-    energy_series = []
-
-    for t in range(timepoints):
-        neural_energy = np.mean(np.abs(z)**2)
-        dE = alpha - beta*neural_energy - delta*E
-        E += dE*dt
-        E = max(E, 0.01)
-
-        coupling = 0.2*(C @ z - row_sums*z)
+    z = np.random.randn(N)+1j*np.random.randn(N)
+    cardiac = respiratory = metabolic = 0.1
+    steps = int(T/dt)
+    Z = np.zeros((steps, N), dtype=complex)
+    P = np.zeros((steps, 3))
+    
+    for t in range(steps):
+        phases = np.angle(z)
+        R = np.abs(np.exp(1j*phases).mean())
+        cardiac += (0.3*cardiac - cardiac**3 + 0.05*R)*dt
+        respiratory += (0.25*respiratory - respiratory**3 + 0.04*R)*dt
+        metabolic += (0.1*metabolic - metabolic**3 + 0.02*R)*dt
+        body_state = np.mean([cardiac, respiratory, metabolic])
         dz = (0.02 + 1j*omega - np.abs(z)**2)*z
-        dz += coupling - kappa*(1.0/E)*z
+        dz += G*(z.mean()-z) + lambda_body*body_state*z
         dz += noise*(np.random.randn(N)+1j*np.random.randn(N))
         z += dz*dt
+        Z[t] = z
+        P[t] = [cardiac, respiratory, metabolic]
+    return Z, P
 
-        if t == perturb_time:
-            z *= 0.2
+# ================================
+# 2. METRICS
+# ================================
+def metastability(Z):
+    phases = np.angle(Z)
+    R = np.abs(np.exp(1j*phases).mean(axis=1))
+    return np.std(R), R
 
-        if t > perturb_time and not recovered:
-            if np.mean(np.abs(z)) > threshold:
-                recovery_time = t - perturb_time
-                recovered = True
+def entropy_signal(signal, bins=40):
+    hist,_ = np.histogram(signal,bins=bins,density=True)
+    hist = hist[hist>0]
+    return -np.sum(hist*np.log(hist))
 
-        energy_series.append(E)
+def gaussian_copula_mi(x, y):
+    xr = rankdata(x)/(len(x)+1)
+    yr = rankdata(y)/(len(y)+1)
+    xn = norm.ppf(xr)
+    yn = norm.ppf(yr)
+    r = np.corrcoef(xn,yn)[0,1]
+    r = np.clip(r,-0.9999,0.9999)
+    return -0.5*np.log(1-r**2)
 
-    cognition = 1.0 / (recovery_time + 1e-6)
-    energy_var = np.var(energy_series)
-    return cognition, energy_var
+def compute_ECM(Z, P, H_star):
+    _, R = metastability(Z)
+    H = entropy_signal(R)
+    body = np.mean(P,axis=1)
+    MI = gaussian_copula_mi(R, body)
+    return MI - abs(H-H_star)
 
-# ============================================================
-# 3. FEP SIMULATION
-# ============================================================
-def simulate_FEP(C, age, T=350, dt=0.02, precision=1.0, noise=0.02):
-    N = C.shape[0]
-    omega = np.random.uniform(0.04, 0.07, N)
-    z = np.random.randn(N) + 1j*np.random.randn(N)
-    timepoints = int(T/dt)
-    row_sums = np.sum(C, axis=1)
-    perturb_time = int(0.4*timepoints)
-    threshold = 1.0
-    recovered = False
-    recovery_time = timepoints
-    error_series = []
+def compute_PPI(Z):
+    X = np.abs(Z)
+    X_pred, X_true = X[:-1], X[1:]
+    beta = np.linalg.pinv(X_pred) @ X_true
+    residual = X_true - X_pred @ beta
+    return np.mean(residual**2)
 
-    for t in range(timepoints):
-        prediction = C @ z
-        prediction_error = z - prediction
-        error_series.append(np.mean(np.abs(prediction_error)))
-
-        coupling = 0.2*(C @ z - row_sums*z)
-        dz = (0.02 + 1j*omega - np.abs(z)**2)*z
-        dz += coupling - precision*prediction_error
-        dz += noise*(np.random.randn(N)+1j*np.random.randn(N))
-        z += dz*dt
-
-        if t == perturb_time:
-            z *= 0.2
-
-        if t > perturb_time and not recovered:
-            if np.mean(np.abs(z)) > threshold:
-                recovery_time = t - perturb_time
-                recovered = True
-
-    cognition = 1.0 / (recovery_time + 1e-6)
-    error_var = np.var(error_series)
-    return cognition, error_var
-
-# ============================================================
-# 4. DATASET GENERATION
-# ============================================================
-def generate_dataset(C, n_subjects=80):
-    ages = np.linspace(10, 80, n_subjects)
-    rows = []
-    for age in ages:
-        cog_ecm, energy_var = simulate_ECM(C, age)
-        cog_fep, error_var = simulate_FEP(C, age)
-        rows.append({
-            "Age": age,
-            "Cog_ECM": cog_ecm,
-            "Cog_FEP": cog_fep,
-            "Energy_Var": energy_var,
-            "Error_Var": error_var
-        })
-    df = pd.DataFrame(rows)
-    df["Age_c"] = df["Age"] - df["Age"].mean()
-    df["Age2"] = df["Age_c"]**2
+# ================================
+# 3. DATA GENERATION
+# ================================
+def generate_lifespan_dataset(N_subjects=60, N_timepoints=6):
+    ages = np.linspace(10,80,N_timepoints)
+    rows=[]
+    for subj in range(N_subjects):
+        subj_shift = np.random.normal(0,0.04)
+        for age in ages:
+            # Adaptive G
+            age_factor = max(-0.0008*(age-45)**2 + 1,0.1)
+            Z,P = simulate_brain_body(G=0.2*age_factor + subj_shift)
+            H_star = 1.0  # reference
+            ECM = compute_ECM(Z,P,H_star)
+            PPI = compute_PPI(Z)
+            Path = np.random.normal(0,1)
+            Cog = 0.6*ECM - 0.0006*(age-45)**2 + np.random.normal(0,0.5)
+            rows.append({"Subject":subj,"Age":age,"ECM":ECM,"PPI":PPI,"Path":Path,"Cog":Cog})
+    df=pd.DataFrame(rows)
+    df["Age_c"]=df["Age"]-df["Age"].mean()
+    df["Age2"]=df["Age_c"]**2
     return df
 
-# ============================================================
-# 5. CROSS-VALIDATION & PERMUTATION
-# ============================================================
-def cross_val_r2(X, y, n_splits=10):
-    kf = KFold(n_splits=n_splits, shuffle=True, random_state=42)
-    scores = []
-    for train, test in kf.split(X):
-        model = LinearRegression().fit(X[train], y[train])
-        pred = model.predict(X[test])
-        scores.append(r2_score(y[test], pred))
-    return np.mean(scores)
+# ================================
+# 4. MIXED EFFECTS MODEL
+# ================================
+def fit_mixed_model(df):
+    model = smf.mixedlm("Cog ~ ECM + Age_c + Age2 + PPI + Path", df, groups=df["Subject"])
+    result = model.fit()
+    return result
 
-def permutation_test(X, y, n_perm=500):
-    real_score = cross_val_r2(X, y)
-    perm_scores = []
-    for _ in range(n_perm):
+# ================================
+# 5. PERMUTATION TEST
+# ================================
+def permutation_test(X, y, n_perms=100):
+    """Cross-validated R² permutation"""
+    X = np.nan_to_num(X)
+    y = np.nan_to_num(y)
+    real_model = LinearRegression().fit(X,y)
+    real_score = r2_score(y, real_model.predict(X))
+    perm_scores=[]
+    for _ in range(n_perms):
         y_perm = np.random.permutation(y)
-        perm_scores.append(cross_val_r2(X, y_perm))
-    p_value = np.mean(np.array(perm_scores) >= real_score)
+        perm_scores.append(r2_score(y_perm, LinearRegression().fit(X,y_perm).predict(X)))
+    p_value = (np.sum(np.array(perm_scores)>=real_score)+1)/(n_perms+1)
     return real_score, p_value
 
-# ============================================================
-# 6. MEDIATION BOOTSTRAP (ECM → Brain Age → Cognition)
-# ============================================================
-def mediation_bootstrap(df, mediator_col="Energy_Var", outcome_col="Cog_ECM", n_boot=1000):
-    indirect_effects = []
+# ================================
+# 6. BOOTSTRAP CI
+# ================================
+def bootstrap_ci(data, n_boot=2000, alpha=0.05):
+    boot_samples=[]
     for _ in range(n_boot):
-        sample = resample(df)
-        a = LinearRegression().fit(sample[["Age"]], sample[[mediator_col]]).coef_[0][0]
-        b = LinearRegression().fit(sample[["Age", mediator_col]], sample[[outcome_col]]).coef_[0][1]
-        indirect_effects.append(a*b)
-    indirect_effects = np.array(indirect_effects)
-    return np.mean(indirect_effects), np.percentile(indirect_effects, 2.5), np.percentile(indirect_effects, 97.5)
+        sample=resample(data)
+        boot_samples.append(np.mean(sample))
+    lower = np.percentile(boot_samples,100*alpha/2)
+    upper = np.percentile(boot_samples,100*(1-alpha/2))
+    return lower, upper
 
-# ============================================================
-# 7. REGIME DIVERGENCE
-# ============================================================
-def regime_divergence(C):
-    kappas = np.linspace(0.2, 3.5, 25)
-    cognition_vals = []
-    for k in kappas:
-        cog, _ = simulate_ECM(C, age=60, kappa=k)
-        cognition_vals.append(cog)
-    curvature = np.gradient(np.gradient(cognition_vals))
-    return np.max(np.abs(curvature))
+# ================================
+# 7. MEDIATION ANALYSIS
+# ================================
+def mediation_analysis(df):
+    # ECM → Age2 → Cognition
+    model_m = smf.ols("Age2 ~ ECM",df).fit()
+    model_y = smf.ols("Cog ~ ECM + Age2",df).fit()
+    indirect = model_m.params["ECM"]*model_y.params["Age2"]
+    direct = model_y.params["ECM"]
+    total = direct + indirect
+    return {"direct":direct,"indirect":indirect,"total":total}
 
-# ============================================================
-# 8. RUN SINGLE PIPELINE
-# ============================================================
-def run_pipeline(seed=0):
-    np.random.seed(seed)
-    C = generate_connectivity(N=40, seed=seed)
-    df = generate_dataset(C)
-
-    # ECM
-    X_ecm = df[["Age", "Energy_Var"]].values
-    y_ecm = df["Cog_ECM"].values
-    r2_ecm, p_ecm = permutation_test(X_ecm, y_ecm)
-
-    # FEP
-    X_fep = df[["Age", "Error_Var"]].values
-    y_fep = df["Cog_FEP"].values
-    r2_fep, p_fep = permutation_test(X_fep, y_fep)
-
-    # Mediation
-    med_mean, med_low, med_high = mediation_bootstrap(df)
-
-    # Regime divergence
-    curvature_peak = regime_divergence(C)
-
-    return {
-        "ECM_R2": r2_ecm,
-        "ECM_p": p_ecm,
-        "FEP_R2": r2_fep,
-        "FEP_p": p_fep,
-        "ECM_med_mean": med_mean,
-        "ECM_med_CI_low": med_low,
-        "ECM_med_CI_high": med_high,
-        "Regime_curvature_peak": curvature_peak
-    }
-
-# ============================================================
-# 9. MULTI-SEED ROBUSTNESS + FIGURES
-# ============================================================
+# ================================
+# 8. RUN MULTISEED PIPELINE
+# ================================
 def run_multiseed_pipeline(n_seeds=20):
-    results = []
+    all_results=[]
     for seed in range(n_seeds):
-        print(f"Running seed {seed}")
-        results.append(run_pipeline(seed))
-    df_res = pd.DataFrame(results)
+        np.random.seed(seed)
+        df = generate_lifespan_dataset()
+        result = fit_mixed_model(df)
+        X = df[["ECM","PPI","Age_c","Age2","Path"]].values
+        y = df["Cog"].values
+        r2, p = permutation_test(X, y)
+        boot_l, boot_u = bootstrap_ci(result.params.values)
+        med = mediation_analysis(df)
+        all_results.append({"Seed":seed,
+                            "Beta_ECM":result.params["ECM"],
+                            "p_ECM":result.pvalues["ECM"],
+                            "Beta_Age2":result.params["Age2"],
+                            "p_Age2":result.pvalues["Age2"],
+                            "R2_perm":r2,
+                            "p_perm":p,
+                            "Bootstrap_Lower":boot_l,
+                            "Bootstrap_Upper":boot_u,
+                            "Mediation":med})
+        print(f"Seed {seed+1}/{n_seeds} complete")
+    return pd.DataFrame(all_results)
 
-    # Figures
-    fig, axes = plt.subplots(2, 2, figsize=(14,10))
-    sns.histplot(df_res["ECM_R2"], kde=True, ax=axes[0,0], color="#1f77b4")
-    axes[0,0].set_title("Panel A: ECM R² distribution")
-    sns.histplot(df_res["FEP_R2"], kde=True, ax=axes[0,1], color="#ff7f0e")
-    axes[0,1].set_title("Panel B: FEP R² distribution")
-    sns.histplot(df_res["ECM_med_mean"], kde=True, ax=axes[1,0], color="#2ca02c")
-    axes[1,0].set_title("Panel C: ECM → Cognition mediation")
-    axes[1,0].axvline(df_res["ECM_med_mean"].mean(), color="black", linestyle="--")
-    axes[1,1].plot(df_res["Regime_curvature_peak"], marker="o")
-    axes[1,1].set_title("Panel D: Regime divergence (curvature peak)")
+# ================================
+# 9. FIGURE PANELS
+# ================================
+def plot_figures(df_results):
+    sns.set(style="whitegrid",context="talk",palette="colorblind")
+    fig, axes = plt.subplots(2,2,figsize=(16,12))
+
+    # Panel 1: ECM Beta distribution
+    sns.histplot(df_results["Beta_ECM"], kde=True, ax=axes[0,0], color="#1f77b4")
+    axes[0,0].axvline(df_results["Beta_ECM"].mean(),color="black",linestyle="--")
+    axes[0,0].set_title("Panel 1: ECM Beta Distribution")
+
+    # Panel 2: Age² Beta distribution
+    sns.histplot(df_results["Beta_Age2"], kde=True, ax=axes[0,1], color="#ff7f0e")
+    axes[0,1].axvline(df_results["Beta_Age2"].mean(),color="black",linestyle="--")
+    axes[0,1].set_title("Panel 2: Age² Beta Distribution")
+
+    # Panel 3: Permutation R² distribution
+    sns.histplot(df_results["R2_perm"], kde=True, ax=axes[1,0], color="#2ca02c")
+    axes[1,0].set_title("Panel 3: Permutation R²")
+
+    # Panel 4: Mediation indirect effect
+    indirects = [m["indirect"] for m in df_results["Mediation"]]
+    sns.histplot(indirects, kde=True, ax=axes[1,1], color="#d62728")
+    axes[1,1].set_title("Panel 4: Mediation Indirect Effect (ECM→Age²→Cognition)")
 
     plt.tight_layout()
-    plt.savefig("FIGURE_ECM_FEP_PANELS.png", dpi=600)
+    plt.savefig("FIGURE_Q1_LIFESPAN_PIPELINE.png",dpi=600)
+    plt.savefig("FIGURE_Q1_LIFESPAN_PIPELINE.pdf")
     plt.show()
 
-    print("\n=== ROBUSTNESS SUMMARY ===\n")
-    print(df_res.describe())
-    return df_res
-
-# ============================================================
-# 10. MAIN EXECUTION
-# ============================================================
+# ================================
+# 10. MAIN
+# ================================
 if __name__=="__main__":
-    print("\n=== ENERGY-CONSTRAINED VS PREDICTIVE PIPELINE ===\n")
+    print("\n=== ENERGY-CONSTRAINED vs PREDICTIVE PIPELINE ===\n")
     df_results = run_multiseed_pipeline(n_seeds=20)
+    df_results.to_csv("LIFESPAN_PIPELINE_RESULTS.csv",index=False)
+    print("\n=== RESULTS SUMMARY ===\n")
+    print(df_results.describe())
+    print("\nGenerating publication-quality figures...")
+    plot_figures(df_results)
+    print("\nPipeline complete. All files saved.\n")
