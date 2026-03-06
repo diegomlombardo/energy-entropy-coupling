@@ -1,5 +1,5 @@
 # ============================================================
-# Q1 Journal-Ready Brain-Body-Energy Generative Model
+# Brain-Body-Energy Generative Model
 # ============================================================
 
 import numpy as np
