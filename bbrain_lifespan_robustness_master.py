@@ -197,41 +197,68 @@ def run_robustness_all(n_seeds=10, save_dir="Model_Results"):
 # ============================================================
 def plot_results_all(results_df, df_all=None, save_dir="Model_Results"):
     sns.set(style="whitegrid", context="talk")
-    fig, axes = plt.subplots(1,4,figsize=(24,6))
-    # R²
-    sns.histplot(results_df["EECI_R2"], kde=True, ax=axes[0])
-    sns.histplot(results_df["FECI_R2"], kde=True, ax=axes[0])
-    sns.histplot(results_df["NullCI_R2"], kde=True, ax=axes[0])
-    sns.histplot(results_df["PredCodingCI_R2"], kde=True, ax=axes[0])
-    axes[0].set_title("Cross-Validated R²")
-    axes[0].legend(["ECM","FEP","Null","PredCoding"])
-    # p-values
-    sns.histplot(results_df["EECI_p"], kde=True, ax=axes[1])
-    sns.histplot(results_df["FECI_p"], kde=True, ax=axes[1])
-    sns.histplot(results_df["NullCI_p"], kde=True, ax=axes[1])
-    sns.histplot(results_df["PredCodingCI_p"], kde=True, ax=axes[1])
-    axes[1].set_title("Permutation p-values")
-    axes[1].legend(["ECM","FEP","Null","PredCoding"])
-    # R² per seed
-    axes[2].plot(results_df.index, results_df["EECI_R2"], 'o-', label="ECM")
-    axes[2].plot(results_df.index, results_df["FECI_R2"], 'o-', label="FEP")
-    axes[2].plot(results_df.index, results_df["NullCI_R2"], 'o-', label="Null")
-    axes[2].plot(results_df.index, results_df["PredCodingCI_R2"], 'o-', label="PredCoding")
-    axes[2].set_title("R² per Seed")
-    axes[2].set_xlabel("Seed")
-    axes[2].set_ylabel("R²")
-    axes[2].legend()
-    # Metrics vs Age (combined)
+    fig, axes = plt.subplots(2,3,figsize=(24,12))
+    
+    # ------------------------------
+    # 1. Cross-Validated R² Histograms
+    # ------------------------------
+    ax = axes[0,0]
+    for model in ["EECI","FECI","NullCI","PredCodingCI"]:
+        sns.histplot(results_df[model+"_R2"], kde=True, ax=ax)
+    ax.set_title("Cross-Validated R²")
+    ax.legend(["ECM","FEP","Null","PredCoding"])
+    
+    # ------------------------------
+    # 2. Permutation p-values
+    # ------------------------------
+    ax = axes[0,1]
+    for model in ["EECI","FECI","NullCI","PredCodingCI"]:
+        sns.histplot(results_df[model+"_p"], kde=True, ax=ax)
+    ax.set_title("Permutation p-values")
+    ax.legend(["ECM","FEP","Null","PredCoding"])
+    
+    # ------------------------------
+    # 3. R² per Seed
+    # ------------------------------
+    ax = axes[0,2]
+    for model in ["EECI","FECI","NullCI","PredCodingCI"]:
+        ax.plot(results_df.index, results_df[model+"_R2"], 'o-', label=model)
+    ax.set_title("R² per Seed")
+    ax.set_xlabel("Seed")
+    ax.set_ylabel("R²")
+    ax.legend()
+    
+    # ------------------------------
+    # 4. Metrics vs Age with 95% CI
+    # ------------------------------
     if df_all is not None:
-        df_age = df_all.groupby("Age")[["EECI","FECI","NullCI","PredCodingCI"]].mean().reset_index()
-        axes[3].plot(df_age["Age"], df_age["EECI"], '-o', label="ECM")
-        axes[3].plot(df_age["Age"], df_age["FECI"], '-o', label="FEP")
-        axes[3].plot(df_age["Age"], df_age["NullCI"], '-o', label="Null")
-        axes[3].plot(df_age["Age"], df_age["PredCodingCI"], '-o', label="PredCoding")
-        axes[3].set_title("Mean Metric vs Age")
-        axes[3].set_xlabel("Age")
-        axes[3].set_ylabel("Metric Value")
-        axes[3].legend()
+        ax = axes[1,0]
+        df_age = df_all.groupby("Age")[["EECI","FECI","NullCI","PredCodingCI"]]
+        df_mean = df_age.mean()
+        df_sem = df_age.sem()
+        for model in ["EECI","FECI","NullCI","PredCodingCI"]:
+            ax.plot(df_mean.index, df_mean[model], '-o', label=model)
+            ax.fill_between(df_mean.index,
+                            df_mean[model]-1.96*df_sem[model],
+                            df_mean[model]+1.96*df_sem[model],
+                            alpha=0.2)
+        ax.set_title("Mean Metric ± 95% CI vs Age")
+        ax.set_xlabel("Age")
+        ax.set_ylabel("Metric Value")
+        ax.legend()
+    
+        # ------------------------------
+        # 5. EECI vs FECI Scatter
+        # ------------------------------
+        ax = axes[1,1]
+        sns.scatterplot(data=df_all, x="EECI", y="FECI", hue="Age", palette="viridis", ax=ax, alpha=0.6)
+        ax.set_title("EECI vs FECI Scatter (colored by Age)")
+        
+        # ------------------------------
+        # 6. Empty placeholder for layout
+        # ------------------------------
+        axes[1,2].axis('off')
+    
     plt.tight_layout()
     fig_path = os.path.join(save_dir,"Model_Figures.png")
     plt.savefig(fig_path,dpi=300)
