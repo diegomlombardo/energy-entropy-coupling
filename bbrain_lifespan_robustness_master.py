@@ -1,5 +1,7 @@
 # ============================================================
 # Brain-Body-Energy Generative Model
+# Incremental saving, CV R², permutation tests, robust
+# Publication-quality figures
 # ============================================================
 
 import numpy as np
@@ -10,7 +12,6 @@ from sklearn.model_selection import KFold
 from sklearn.linear_model import LinearRegression
 from statsmodels.stats.multitest import multipletests
 from joblib import Parallel, delayed
-from itertools import product
 import matplotlib.pyplot as plt
 import seaborn as sns
 import os
@@ -18,10 +19,10 @@ import os
 # ============================================================
 # PARAMETERS
 # ============================================================
-NETWORK_SIZES = [40, 80, 120]
-N_NETWORKS_PER_SIZE = 5
-SEEDS_PER_NETWORK = 50
-N_SUBJECTS_PER_SEED = 200
+NETWORK_SIZES = [40, 80, 120]           
+N_NETWORKS_PER_SIZE = 5                 
+SEEDS_PER_NETWORK = 50                  
+N_SUBJECTS_PER_SEED = 200               
 T = 500
 DT = 0.05
 STEPS = int(T / DT)
@@ -30,7 +31,7 @@ N_PERM = 100
 K_BODY = 0.05
 K_ENERGY = 0.05
 
-SAVE_DIR = "BrainBodyEnergy_Q1_Upgraded"
+SAVE_DIR = "BrainBodyEnergy_Publication"
 os.makedirs(SAVE_DIR, exist_ok=True)
 
 # ============================================================
@@ -153,6 +154,8 @@ def simulate_subject(W, network_id, seed, subject_id):
         "Age": age,
         "G": G,
         "Noise": noise,
+        "HeartMean": np.mean(heart),
+        "RespMean": np.mean(resp),
         "Metastability": m,
         "BrainHeartCoherence": coh,
         "PredictiveCoding": pred,
@@ -161,136 +164,123 @@ def simulate_subject(W, network_id, seed, subject_id):
     }
 
 # ============================================================
-# GENERATE DATASET PARALLEL
+# GENERATE DATASET WITH INCREMENTAL SAVING
 # ============================================================
-def generate_dataset_parallel():
-    tasks = []
+def generate_dataset_incremental():
     network_counter = 0
+    all_results = []
     for N in NETWORK_SIZES:
         for net_idx in range(N_NETWORKS_PER_SIZE):
+            print(f"Generating network {network_counter+1}/{len(NETWORK_SIZES)*N_NETWORKS_PER_SIZE} size {N}")
             W = small_world(N, seed=net_idx)
             for seed in range(SEEDS_PER_NETWORK):
-                for subj in range(N_SUBJECTS_PER_SEED):
-                    tasks.append((W,network_counter,seed,subj))
+                results = Parallel(n_jobs=-1)(delayed(simulate_subject)(
+                    W, network_counter, seed, subj
+                ) for subj in range(N_SUBJECTS_PER_SEED))
+                df_seed = pd.DataFrame(results)
+                file_name = f"dataset_network{network_counter}_seed{seed}.csv"
+                df_seed.to_csv(os.path.join(SAVE_DIR,file_name), index=False)
+                all_results.append(df_seed)
             network_counter += 1
-    results = Parallel(n_jobs=-1)(delayed(simulate_subject)(*t) for t in tasks)
-    df = pd.DataFrame(results)
-    df.to_csv(os.path.join(SAVE_DIR,"dataset.csv"),index=False)
-    return df
+    df_all = pd.concat(all_results, ignore_index=True)
+    df_all.to_csv(os.path.join(SAVE_DIR,"dataset_full.csv"), index=False)
+    return df_all
 
 # ============================================================
-# CROSS-VALIDATED R² AND EFFECT SIZE
+# STATISTICAL ANALYSIS
 # ============================================================
-def crossval_r2(df,predictor,target):
-    X = df[[predictor]].values
+def crossval_r2(df, pred, target):
+    X = df[[pred,"Age"]].values
     y = df[target].values
-    kf = KFold(10,shuffle=True,random_state=42)
-    r2_list=[]
-    for tr,te in kf.split(X):
-        model = LinearRegression().fit(X[tr],y[tr])
-        pred_vals = model.predict(X[te])
-        r,_ = pearsonr(pred_vals,y[te])
-        r2_list.append(r**2)
-    mean_r2 = np.mean(r2_list)
-    ci_lower = np.percentile(r2_list,2.5)
-    ci_upper = np.percentile(r2_list,97.5)
-    return mean_r2,(ci_lower,ci_upper),r2_list
+    kf = KFold(10, shuffle=True, random_state=42)
+    r2s = []
+    for tr, te in kf.split(X):
+        model = LinearRegression().fit(X[tr], y[tr])
+        y_pred = model.predict(X[te])
+        r, _ = pearsonr(y_pred, y[te])
+        r2s.append(r**2)
+    return np.mean(r2s), np.percentile(r2s,2.5), np.percentile(r2s,97.5)
 
-def permutation_test(df,predictor,target,n_perm=N_PERM):
-    real_r2, ci, _ = crossval_r2(df,predictor,target)
-    perm_r2=[]
+def permutation_test(df, pred, target, n_perm=N_PERM):
+    real, ci_low, ci_high = crossval_r2(df,pred,target)
+    perm_r2s = []
     for _ in range(n_perm):
         df_perm = df.copy()
-        df_perm[predictor] = np.random.permutation(df[predictor].values)
-        r2,_,_ = crossval_r2(df_perm,predictor,target)
-        perm_r2.append(r2)
-    p_val = np.mean(np.array(perm_r2)>=real_r2)
-    return real_r2, ci, p_val, perm_r2
+        df_perm[pred] = np.random.permutation(df_perm[pred])
+        r2_perm,_ , _ = crossval_r2(df_perm,pred,target)
+        perm_r2s.append(r2_perm)
+    p_val = np.mean(np.array(perm_r2s) >= real)
+    return real, ci_low, ci_high, p_val
 
 # ============================================================
-# RUN SIMULATION
+# RUN FULL SIMULATION AND ANALYSIS
 # ============================================================
-print("Generating dataset...")
-df = generate_dataset_parallel()
-print(f"Dataset saved: {df.shape[0]} subjects")
+print("Generating dataset incrementally...")
+df = generate_dataset_incremental()
+print("Dataset generation complete.")
 
-# ============================================================
-# MODEL COMPARISON
-# ============================================================
 predictors = ["Metastability","BrainHeartCoherence","PredictiveCoding"]
 targets = ["EnergyStability","EnergyEfficiency"]
-results=[]
-perm_distributions={}
 
-for pred,targ in product(predictors,targets):
-    r2, ci, pval, perm_vals = permutation_test(df,pred,targ)
-    results.append({
-        "Predictor":pred,
-        "Target":targ,
-        "CrossVal_R2":r2,
-        "CI_lower":ci[0],
-        "CI_upper":ci[1],
-        "p_value":pval
-    })
-    perm_distributions[(pred,targ)] = perm_vals
+results = []
+for pred in predictors:
+    for target in targets:
+        print(f"Analyzing {pred} → {target}")
+        r2, ci_low, ci_high, pval = permutation_test(df, pred, target)
+        results.append({
+            "Predictor": pred,
+            "Target": target,
+            "CrossVal_R2": r2,
+            "CI_lower": ci_low,
+            "CI_upper": ci_high,
+            "p_value": pval
+        })
 
 res_df = pd.DataFrame(results)
-res_df["p_adj_bonf"] = multipletests(res_df["p_value"],method='bonferroni')[1]
-res_df["p_adj_fdr"] = multipletests(res_df["p_value"],method='fdr_bh')[1]
-res_df.to_csv(os.path.join(SAVE_DIR,"model_comparison_table.csv"),index=False)
-print("Model comparison table saved.")
+# Multiple comparison correction
+res_df["p_adj_bonf"] = multipletests(res_df["p_value"], method='bonferroni')[1]
+res_df["p_adj_fdr"] = multipletests(res_df["p_value"], method='fdr_bh')[1]
+
+# Save Excel
+res_df.to_excel(os.path.join(SAVE_DIR,"model_comparison.xlsx"), index=False)
+print("Analysis complete. Results saved as Excel table.")
+
+# Display table
+print(res_df)
 
 # ============================================================
-# FIGURES
+# PUBLICATION-QUALITY FIGURES
 # ============================================================
-
-sns.set(style="whitegrid")
-
-# CV R² barplot with CI
-plt.figure(figsize=(10,6))
-sns.barplot(data=res_df,x="Predictor",y="CrossVal_R2",hue="Target",ci=None,palette="Set2")
-for i,row in res_df.iterrows():
-    plt.errorbar(x=i%len(predictors),y=row["CrossVal_R2"],
-                 yerr=[[row["CrossVal_R2"]-row["CI_lower"]],[row["CI_upper"]-row["CrossVal_R2"]]],
-                 fmt='none',c='black',capsize=5)
-plt.ylabel("Cross-validated R²")
+plt.figure(figsize=(8,5))
+sns.barplot(data=res_df, x="Predictor", y="CrossVal_R2", hue="Target", capsize=0.2)
 plt.title("Predictors of Energy Stability and Efficiency")
-plt.legend(title="Target")
 plt.tight_layout()
-plt.savefig(os.path.join(SAVE_DIR,"model_comparison_CV_R2.png"),dpi=300)
+plt.savefig(os.path.join(SAVE_DIR,"model_comparison_barplot.png"), dpi=300)
 plt.show()
 
-# Permutation histograms
-for pred,targ in product(predictors,targets):
-    perm_vals = perm_distributions[(pred,targ)]
-    r2_real = res_df.loc[(res_df["Predictor"]==pred)&(res_df["Target"]==targ),"CrossVal_R2"].values[0]
-    plt.figure(figsize=(6,4))
-    sns.histplot(perm_vals,kde=True,color='skyblue',bins=20)
-    plt.axvline(r2_real,color='red',linestyle='--',label='Observed R²')
-    plt.xlabel("R²")
-    plt.ylabel("Count")
-    plt.title(f"Permutation Test: {pred} → {targ}")
-    plt.legend()
-    plt.tight_layout()
-    plt.savefig(os.path.join(SAVE_DIR,f"perm_hist_{pred}_{targ}.png"),dpi=300)
-    plt.show()
+# Age vs EnergyEfficiency
+plt.figure(figsize=(8,5))
+sns.scatterplot(data=df, x="Age", y="EnergyEfficiency", alpha=0.3)
+sns.regplot(data=df, x="Age", y="EnergyEfficiency", scatter=False, color="red")
+plt.title("Age vs Energy Efficiency")
+plt.tight_layout()
+plt.savefig(os.path.join(SAVE_DIR,"age_vs_energy_efficiency.png"), dpi=300)
+plt.show()
+
+# Heart and Resp vs EnergyEfficiency
+plt.figure(figsize=(8,5))
+sns.scatterplot(data=df, x="HeartMean", y="EnergyEfficiency", alpha=0.3, label="Heart")
+sns.scatterplot(data=df, x="RespMean", y="EnergyEfficiency", alpha=0.3, label="Respiration")
+plt.title("Peripheral Physiology vs Energy Efficiency")
+plt.tight_layout()
+plt.savefig(os.path.join(SAVE_DIR,"peripheral_vs_energy.png"), dpi=300)
+plt.show()
 
 # Predictor correlation heatmap
 plt.figure(figsize=(6,5))
-sns.heatmap(df[predictors].corr(),annot=True,cmap="coolwarm")
-plt.title("Predictor Correlations")
+corr = df[["Metastability","BrainHeartCoherence","PredictiveCoding"]].corr()
+sns.heatmap(corr, annot=True, cmap="coolwarm")
+plt.title("Predictor Correlation")
 plt.tight_layout()
-plt.savefig(os.path.join(SAVE_DIR,"predictor_correlation.png"),dpi=300)
+plt.savefig(os.path.join(SAVE_DIR,"predictor_correlation.png"), dpi=300)
 plt.show()
-
-# Age vs Energy Efficiency/Stability regression
-for targ in targets:
-    plt.figure(figsize=(8,5))
-    sns.scatterplot(data=df,x="Age",y=targ,alpha=0.3)
-    sns.regplot(data=df,x="Age",y=targ,scatter=False,color='red')
-    plt.title(f"Age vs {targ}")
-    plt.tight_layout()
-    plt.savefig(os.path.join(SAVE_DIR,f"age_{targ}.png"),dpi=300)
-    plt.show()
-
-print("Simulation complete. All results saved in:", SAVE_DIR)
