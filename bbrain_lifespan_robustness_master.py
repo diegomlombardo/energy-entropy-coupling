@@ -1,8 +1,11 @@
 # ============================================================
-# Brain-Body-Energy Generative Model (Updated)
-# Incremental saving, CV R², permutation tests, robust
-# Longitudinal trends, Null model, ForwardModeling predictor
-# Publication-quality figures
+# Brain-Body-Energy Generative Model with Synthetic Cognition
+# - Incremental saving
+# - Cross-validated R²
+# - Permutation tests
+# - Longitudinal trends
+# - Forward modeling predictor
+# - Synthetic cognition integration
 # ============================================================
 
 import numpy as np
@@ -131,6 +134,19 @@ def energy_metrics(E):
     return np.std(E), np.mean(E)
 
 # ============================================================
+# SYNTHETIC COGNITION
+# ============================================================
+def generate_synthetic_cognition(traj_power, heart, resp, seed):
+    rng = np.random.default_rng(seed)
+    brain_global = np.mean(traj_power, axis=1)
+    coh = coherence(brain_global, heart)
+    fm = predictive_metric(traj_power)
+    m = metastability(traj_power)
+    # Weighted sum + noise
+    cognition = 0.4 * fm + 0.3 * m + 0.3 * coh + rng.normal(scale=0.05)
+    return cognition
+
+# ============================================================
 # SIMULATE SUBJECT
 # ============================================================
 def simulate_subject(W, network_id, seed, subject_id):
@@ -138,17 +154,26 @@ def simulate_subject(W, network_id, seed, subject_id):
     age = rng.uniform(20, 80)
     G = rng.uniform(0.2, 1.0)
     noise = rng.uniform(0.01, 0.05)
+    
     heart, resp = simulate_body(seed + subject_id)
+    
+    # dummy energy for initial brain simulation
     brain_power_dummy = np.ones(STEPS)
     energy_dummy = simulate_energy(brain_power_dummy, heart, resp)
+    
     traj_power = simulate_brain(W, G, noise, heart, energy_dummy, seed + subject_id)
     brain_global = np.mean(traj_power, axis=1)
+    
     m = metastability(traj_power)
     coh = coherence(brain_global, heart)
-    fm = predictive_metric(traj_power)  # ForwardModeling
+    fm = predictive_metric(traj_power)  # Forward Modeling
+    
     brain_power = np.mean(traj_power, axis=1)
     energy = simulate_energy(brain_power, heart, resp)
     stab, eff = energy_metrics(energy)
+    
+    synth_cog = generate_synthetic_cognition(traj_power, heart, resp, seed + subject_id)
+    
     return {
         "NetworkID": network_id,
         "Seed": seed,
@@ -162,29 +187,37 @@ def simulate_subject(W, network_id, seed, subject_id):
         "BrainHeartCoherence": coh,
         "ForwardModeling": fm,
         "EnergyStability": stab,
-        "EnergyEfficiency": eff
+        "EnergyEfficiency": eff,
+        "SyntheticCognition": synth_cog
     }
 
 # ============================================================
-# GENERATE DATASET WITH INCREMENTAL SAVING
+# DATASET GENERATION WITH INCREMENTAL SAVING
 # ============================================================
 def generate_dataset_incremental():
     network_counter = 0
     all_results = []
+    
     for N in NETWORK_SIZES:
         for net_idx in range(N_NETWORKS_PER_SIZE):
             print(f"Generating network {network_counter+1}/{len(NETWORK_SIZES)*N_NETWORKS_PER_SIZE} size {N}")
             W = small_world(N, seed=net_idx)
+            
             for seed in range(SEEDS_PER_NETWORK):
                 results = Parallel(n_jobs=-1)(delayed(simulate_subject)(
                     W, network_counter, seed, subj
                 ) for subj in range(N_SUBJECTS_PER_SEED))
+                
                 df_seed = pd.DataFrame(results)
-                df_seed['NullModel'] = np.random.normal(size=len(df_seed))  # null baseline
+                df_seed['NullModel'] = np.random.normal(size=len(df_seed))
+                
                 file_name = f"dataset_network{network_counter}_seed{seed}.csv"
                 df_seed.to_csv(os.path.join(SAVE_DIR, file_name), index=False)
+                
                 all_results.append(df_seed)
+            
             network_counter += 1
+    
     df_all = pd.concat(all_results, ignore_index=True)
     df_all.to_csv(os.path.join(SAVE_DIR, "dataset_full.csv"), index=False)
     return df_all
@@ -222,6 +255,9 @@ print("Generating dataset incrementally...")
 df = generate_dataset_incremental()
 print("Dataset generation complete.")
 
+# -----------------------------
+# Model comparisons
+# -----------------------------
 predictors = ["Metastability", "BrainHeartCoherence", "ForwardModeling", "NullModel"]
 targets = ["EnergyStability", "EnergyEfficiency"]
 
@@ -243,13 +279,40 @@ res_df = pd.DataFrame(results)
 res_df["p_adj_bonf"] = multipletests(res_df["p_value"], method='bonferroni')[1]
 res_df["p_adj_fdr"] = multipletests(res_df["p_value"], method='fdr_bh')[1]
 res_df.to_excel(os.path.join(SAVE_DIR, "model_comparison.xlsx"), index=False)
-print("Analysis complete. Results saved as Excel table.")
+print("Energy model analysis complete.")
 print(res_df)
+
+# -----------------------------
+# Synthetic Cognition Analysis
+# -----------------------------
+cog_predictors = ["Metastability", "BrainHeartCoherence", "ForwardModeling"]
+cog_target = "SyntheticCognition"
+
+cog_results = []
+for pred in cog_predictors:
+    r2, ci_low, ci_high, pval = permutation_test(df, pred, cog_target)
+    cog_results.append({
+        "Predictor": pred,
+        "Target": cog_target,
+        "CrossVal_R2": r2,
+        "CI_lower": ci_low,
+        "CI_upper": ci_high,
+        "p_value": pval
+    })
+
+cog_df = pd.DataFrame(cog_results)
+cog_df["p_adj_bonf"] = multipletests(cog_df["p_value"], method='bonferroni')[1]
+cog_df["p_adj_fdr"] = multipletests(cog_df["p_value"], method='fdr_bh')[1]
+cog_df.to_excel(os.path.join(SAVE_DIR, "synthetic_cognition_analysis.xlsx"), index=False)
+print("Synthetic cognition analysis complete.")
+print(cog_df)
 
 # ============================================================
 # PUBLICATION-QUALITY FIGURES
 # ============================================================
-# Predictor R² barplot
+sns.set(style="whitegrid")
+
+# Model comparison barplot
 plt.figure(figsize=(8,5))
 sns.barplot(data=res_df, x="Predictor", y="CrossVal_R2", hue="Target", capsize=0.2)
 plt.title("Predictors of Energy Stability and Efficiency")
@@ -257,37 +320,25 @@ plt.tight_layout()
 plt.savefig(os.path.join(SAVE_DIR, "model_comparison_barplot.png"), dpi=300)
 plt.show()
 
-# Age vs EnergyEfficiency
-plt.figure(figsize=(8,5))
-sns.scatterplot(data=df, x="Age", y="EnergyEfficiency", alpha=0.3)
-sns.regplot(data=df, x="Age", y="EnergyEfficiency", scatter=False, color="red")
-plt.title("Age vs Energy Efficiency")
+# Synthetic cognition barplot
+plt.figure(figsize=(6,4))
+sns.barplot(data=cog_df, x="Predictor", y="CrossVal_R2", capsize=0.2, color="skyblue")
+plt.title("Predictors of Synthetic Cognition")
 plt.tight_layout()
-plt.savefig(os.path.join(SAVE_DIR, "age_vs_energy_efficiency.png"), dpi=300)
+plt.savefig(os.path.join(SAVE_DIR, "synthetic_cognition_barplot.png"), dpi=300)
 plt.show()
 
-# Heart and Resp vs EnergyEfficiency
-plt.figure(figsize=(8,5))
-sns.scatterplot(data=df, x="HeartMean", y="EnergyEfficiency", alpha=0.3, label="Heart")
-sns.scatterplot(data=df, x="RespMean", y="EnergyEfficiency", alpha=0.3, label="Respiration")
-plt.title("Peripheral Physiology vs Energy Efficiency")
-plt.tight_layout()
-plt.savefig(os.path.join(SAVE_DIR, "peripheral_vs_energy.png"), dpi=300)
-plt.show()
-
-# Predictor correlation heatmap
-plt.figure(figsize=(6,5))
-corr = df[["Metastability","BrainHeartCoherence","ForwardModeling","NullModel"]].corr()
+# Predictor correlation heatmap including Synthetic Cognition
+plt.figure(figsize=(7,6))
+corr = df[["Metastability","BrainHeartCoherence","ForwardModeling","SyntheticCognition"]].corr()
 sns.heatmap(corr, annot=True, cmap="coolwarm")
-plt.title("Predictor Correlation")
+plt.title("Predictor Correlation Including Synthetic Cognition")
 plt.tight_layout()
-plt.savefig(os.path.join(SAVE_DIR, "predictor_correlation.png"), dpi=300)
+plt.savefig(os.path.join(SAVE_DIR, "predictor_correlation_synthcog.png"), dpi=300)
 plt.show()
 
-# ============================================================
-# LONGITUDINAL AGE-DEPENDENT TRENDS
-# ============================================================
-age_bins = np.linspace(20, 80, 13)  # 5-year bins
+# Age-dependent trends for energy metrics
+age_bins = np.linspace(20, 80, 13)
 age_trends = []
 for pred in predictors:
     for target in targets:
@@ -309,7 +360,6 @@ for pred in predictors:
 with open(os.path.join(SAVE_DIR, "longitudinal_trends.pkl"), "wb") as f:
     pickle.dump(age_trends, f)
 
-# Plot longitudinal trends
 plt.figure(figsize=(10,6))
 for trend in age_trends:
     plt.plot(trend['AgeBinCenters'], trend['Correlation'], label=f"{trend['Predictor']} → {trend['Target']}")
@@ -319,4 +369,13 @@ plt.title("Age-dependent Predictor Vulnerability")
 plt.legend(bbox_to_anchor=(1.05,1), loc='upper left')
 plt.tight_layout()
 plt.savefig(os.path.join(SAVE_DIR, "longitudinal_trends.png"), dpi=300)
+plt.show()
+
+# Peripheral physiology vs energy efficiency
+plt.figure(figsize=(8,5))
+sns.scatterplot(data=df, x="HeartMean", y="EnergyEfficiency", alpha=0.3, label="Heart")
+sns.scatterplot(data=df, x="RespMean", y="EnergyEfficiency", alpha=0.3, label="Respiration")
+plt.title("Peripheral Physiology vs Energy Efficiency")
+plt.tight_layout()
+plt.savefig(os.path.join(SAVE_DIR, "peripheral_vs_energy.png"), dpi=300)
 plt.show()
