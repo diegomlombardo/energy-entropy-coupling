@@ -1,5 +1,5 @@
 # ============================================================
-# Brain-Body-Energy Generative Model - Robust & Non-Circular Cognition
+# Brain-Body-Energy Generative Model
 # ============================================================
 
 import numpy as np
