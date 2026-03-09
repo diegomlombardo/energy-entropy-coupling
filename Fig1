@@ -1,0 +1,131 @@
+import pandas as pd
+import numpy as np
+import seaborn as sns
+import matplotlib.pyplot as plt
+
+import statsmodels.api as sm
+from statsmodels.robust.robust_linear_model import RLM
+from scipy.stats import pearsonr
+
+SAVE_DIR = "BrainBodyEnergy_Publication"
+
+# -----------------------------
+# Load dataset
+# -----------------------------
+df = pd.read_csv(f"{SAVE_DIR}/dataset_full.csv")
+
+sns.set(style="whitegrid", context="talk")
+
+# -----------------------------
+# Define predictors
+# -----------------------------
+predictors = ["BrainHeartCoherence", "ForwardModeling", "NullModel"]
+outcome = "SyntheticCognition"
+mediator = "EnergyEfficiency"
+
+# -----------------------------
+# FIGURE 1 — Predictors vs Cognition
+# -----------------------------
+fig, axs = plt.subplots(1,3,figsize=(18,5))
+
+for i, var in enumerate(predictors):
+    sns.regplot(
+        data=df,
+        x=var,
+        y=outcome,
+        scatter_kws={'alpha':0.3},
+        line_kws={'color':'red'},
+        ax=axs[i]
+    )
+    axs[i].set_title(f"{var} → {outcome}")
+
+plt.tight_layout()
+plt.savefig(f"{SAVE_DIR}/Figure1_predictors_cognition.png", dpi=300)
+plt.close()
+
+# -----------------------------
+# FIGURE 2 — Predictor → Energy
+# -----------------------------
+fig, axs = plt.subplots(1,3,figsize=(18,5))
+
+for i, var in enumerate(predictors):
+    sns.regplot(
+        data=df,
+        x=var,
+        y=mediator,
+        scatter_kws={'alpha':0.3},
+        line_kws={'color':'green'},
+        ax=axs[i]
+    )
+    axs[i].set_title(f"{var} → {mediator}")
+
+plt.tight_layout()
+plt.savefig(f"{SAVE_DIR}/Figure2_predictors_energy.png", dpi=300)
+plt.close()
+
+# -----------------------------
+# Robust Regression Tables
+# -----------------------------
+robust_results = []
+
+for var in predictors:
+    X = sm.add_constant(df[[var]])
+    y = df[outcome]
+    rlm_model = sm.RLM(y, X, M=sm.robust.norms.HuberT()).fit()
+    robust_results.append({
+        "Predictor": var,
+        "coef": rlm_model.params[var],
+        "intercept": rlm_model.params["const"],
+        "p_value": rlm_model.pvalues[var]
+    })
+
+df_robust = pd.DataFrame(robust_results)
+df_robust.to_csv(f"{SAVE_DIR}/Table_robust_regression.csv", index=False)
+
+# -----------------------------
+# Mediation Analysis (Robust)
+# -----------------------------
+def robust_mediation(df, predictor, mediator, outcome):
+    # Path a: predictor → mediator
+    Xa = sm.add_constant(df[[predictor]])
+    ma = sm.RLM(df[mediator], Xa, M=sm.robust.norms.HuberT()).fit()
+
+    # Path b & c': predictor + mediator → outcome
+    Xb = sm.add_constant(df[[predictor, mediator]])
+    mb = sm.RLM(df[outcome], Xb, M=sm.robust.norms.HuberT()).fit()
+
+    a = ma.params[predictor]
+    b = mb.params[mediator]
+    c_prime = mb.params[predictor]
+    indirect = a * b
+
+    return {
+        "Predictor": predictor,
+        "Mediator": mediator,
+        "a_path": a,
+        "b_path": b,
+        "IndirectEffect": indirect,
+        "DirectEffect": c_prime
+    }
+
+med_results = []
+
+for var in predictors:
+    med_results.append(robust_mediation(df, var, mediator, outcome))
+
+df_med = pd.DataFrame(med_results)
+df_med.to_csv(f"{SAVE_DIR}/Table_robust_mediation.csv", index=False)
+
+# -----------------------------
+# Correlation Matrix (Robust Spearman)
+# -----------------------------
+metrics = predictors + [mediator, outcome]
+corr_matrix = df[metrics].corr(method='spearman')
+
+plt.figure(figsize=(8,6))
+sns.heatmap(corr_matrix, annot=True, cmap="coolwarm", center=0)
+plt.title("Spearman Correlation Matrix (Robust)")
+plt.savefig(f"{SAVE_DIR}/Figure3_spearman_corr.png", dpi=300)
+plt.close()
+
+print("Robust figures and mediation analysis completed.")
