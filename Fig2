@@ -1,0 +1,51 @@
+import pandas as pd
+import matplotlib.pyplot as plt
+import networkx as nx
+
+SAVE_DIR = "BrainBodyEnergy_Publication"
+
+# Load the robust mediation results
+df_med = pd.read_csv(f"{SAVE_DIR}/Table_robust_mediation.csv")
+
+# Create directed graph
+G = nx.DiGraph()
+
+# Nodes and positions
+G.add_node("NullModel", pos=(0,2))
+G.add_node("BrainHeartCoherence", pos=(0,1))
+G.add_node("ForwardModeling", pos=(0,0))
+G.add_node("EnergyEfficiency", pos=(1,0.5))
+G.add_node("SyntheticCognition", pos=(2,0.5))
+
+# Add edges with labels from mediation results
+edge_labels = {}
+
+for _, row in df_med.iterrows():
+    pred = row["Predictor"]
+    
+    # Predictor -> Mediator
+    G.add_edge(pred, "EnergyEfficiency")
+    edge_labels[(pred, "EnergyEfficiency")] = f"a={row['a_path']:.2f}"
+    
+    # Mediator -> Outcome
+    G.add_edge("EnergyEfficiency", "SyntheticCognition")
+    edge_labels[("EnergyEfficiency", "SyntheticCognition")] = f"b={row['b_path']:.2f}\nIndirect={row['IndirectEffect']:.2f}"
+    
+    # Direct effect: Predictor -> Outcome
+    G.add_edge(pred, "SyntheticCognition")
+    edge_labels[(pred, "SyntheticCognition")] = f"c'={row['DirectEffect']:.2f}"
+
+# Plot graph
+pos = nx.get_node_attributes(G, 'pos')
+plt.figure(figsize=(12,6))
+nx.draw(
+    G, pos, with_labels=True, node_size=3000, node_color="skyblue",
+    font_size=12, arrowsize=20
+)
+nx.draw_networkx_edge_labels(G, pos, edge_labels=edge_labels, font_size=10)
+
+plt.title("Robust Mediation Diagram including NullModel", fontsize=16)
+plt.axis('off')
+plt.tight_layout()
+plt.savefig(f"{SAVE_DIR}/Figure4_mediation_diagram.png", dpi=300)
+plt.show()
