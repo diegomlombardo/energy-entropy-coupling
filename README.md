@@ -2,7 +2,7 @@ Brain–Body–Energy Generative Model
 
 This repository contains a fully parallelized in-silico simulation framework designed to explore how brain–body–energy interactions shape cognition across lifespan-like cohorts. The model is inspired by systems-level theories suggesting that cognitive outcomes emerge not only from pathology, but from how metabolic stability and neural dynamics interact across scales.
 
-🌟 Scientific Motivation
+Scientific Motivation
 
 Traditional approaches to cognitive vulnerability often focus on molecular or pathological causes. Here, we take a different perspective:
 
@@ -16,7 +16,7 @@ By simulating synthetic cohorts across a wide age range, we can explore how coup
 
 In short, this framework allows researchers to test mechanistic hypotheses about energy, brain dynamics, and cognition, without relying on real-world pathology data.
 
-⚙️ What This Model Does
+What This Model Does
 
 Simulates brain networks
 
@@ -56,7 +56,7 @@ Uses all available CPU cores to simulate large cohorts quickly.
 
 Supports multiple network sizes, random seeds, and hundreds of subjects per network.
 
-🗂️ Outputs
+Outputs
 
 The simulation produces a comprehensive dataset of synthetic subjects:
 
@@ -66,7 +66,7 @@ Columns include: network ID, subject ID, age, coupling parameters, brain–body 
 
 A NullModel column is included as a control.
 
-📊 Recommended Analyses
+Recommended Analyses
 
 Partial correlations between predictors (BrainHeartCoherence, ForwardModeling, NullModel).
 
@@ -76,7 +76,7 @@ Mediation analysis: EnergyEfficiency as a mediator between brain–body metrics 
 
 Lifespan simulations: explore inverted-U trajectories of cognition versus coupling strength.
 
-🏃‍♂️ Running the Simulation
+Running the Simulation
 git clone <repository_url>
 cd BrainBodyEnergy_Publication
 python brain_body_energy_parallel.py
@@ -125,7 +125,7 @@ Brain–Body–Energy Generative Model
 
 This repository contains a fully parallelized in-silico simulation framework designed to explore how brain–body–energy interactions shape cognition across lifespan-like cohorts. The model is inspired by systems-level theories suggesting that cognitive outcomes emerge not only from pathology, but from how metabolic stability and neural dynamics interact across scales.
 
-🌟 Scientific Motivation
+Scientific Motivation
 
 Traditional approaches to cognitive vulnerability often focus on molecular or pathological causes. Here, we take a different perspective:
 
@@ -133,7 +133,7 @@ Cognition is an emergent property of the whole brain–body system.
 
 Large-scale brain dynamics are constrained by energy balance and autonomic signals.
 
-Cognitive performance depends on the alignment between neural metastability and peripheral energy fluctuations, captured by what we call the Energy–Entropy Coupling Index (EECI).
+Cognitive performance depends on the alignment between neural metastability and peripheral energy fluctuations.
 
 By simulating synthetic cohorts across a wide age range, we can explore how coupling strength influences cognition, revealing patterns like the inverted-U trajectory, where optimal cognition emerges at intermediate coupling and declines at extremes.
 
@@ -189,7 +189,7 @@ Columns include: network ID, subject ID, age, coupling parameters, brain–body 
 
 A NullModel column is included as a control.
 
-📊 Recommended Analyses
+Recommended Analyses
 
 Partial correlations between predictors (BrainHeartCoherence, ForwardModeling, NullModel).
 
@@ -199,7 +199,7 @@ Mediation analysis: EnergyEfficiency as a mediator between brain–body metrics 
 
 Lifespan simulations: explore inverted-U trajectories of cognition versus coupling strength.
 
-🏃‍♂️ Running the Simulation
+ Running the Simulation
 git clone <repository_url>
 cd BrainBodyEnergy_Publication
 python brain_body_energy_parallel.py
@@ -236,6 +236,6 @@ Designed for exploring mechanistic hypotheses linking energy, brain dynamics, an
 
 Modular design allows easy extensions to new network topologies, coupling parameters, and cognitive metrics.
 
-📄 Reference
+References
 
 Lombardo, D.M. (2026). Energy Coupling in Brain–Body Systems: An In-Silico Approach to Lifespan Cognitive and Computational Vulnerability.
