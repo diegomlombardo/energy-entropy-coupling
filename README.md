@@ -4,13 +4,13 @@ This repository contains a fully parallelized in-silico simulation framework des
 
 Scientific Motivation
 
-Traditional approaches to cognitive vulnerability often focus on molecular or pathological causes. Here, we take a different perspective:
+Traditional approaches to cognitive vulnerability often focus on molecular or pathological causes. Here, we take a different/complemetary perspective:
 
 Cognition is an emergent property of the whole brain–body system.
 
 Large-scale brain dynamics are constrained by energy balance and autonomic signals.
 
-Cognitive performance depends on the alignment between neural metastability and peripheral energy fluctuations, captured by what we call the Energy–Entropy Coupling Index (EECI).
+Cognitive performance depends on the alignment between neural metastability and peripheral energy fluctuations, captured by what we call the Energy Coupling
 
 By simulating synthetic cohorts across a wide age range, we can explore how coupling strength influences cognition, revealing patterns like the inverted-U trajectory, where optimal cognition emerges at intermediate coupling and declines at extremes.
 
