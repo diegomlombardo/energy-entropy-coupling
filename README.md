@@ -139,7 +139,7 @@ By simulating synthetic cohorts across a wide age range, we can explore how coup
 
 In short, this framework allows researchers to test mechanistic hypotheses about energy, brain dynamics, and cognition, without relying on real-world pathology data.
 
-⚙️ What This Model Does
+What This Model Does
 
 Simulates brain networks
 
@@ -179,7 +179,7 @@ Uses all available CPU cores to simulate large cohorts quickly.
 
 Supports multiple network sizes, random seeds, and hundreds of subjects per network.
 
-🗂️ Outputs
+Outputs
 
 The simulation produces a comprehensive dataset of synthetic subjects:
 
@@ -228,7 +228,7 @@ matplotlib
 
 seaborn
 
-⚡ Notes
+Notes
 
 Fully in-silico — no human or animal data is required.
 
