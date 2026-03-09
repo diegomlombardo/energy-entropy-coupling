@@ -1,6 +1,6 @@
 # ============================================================
-# ROBUST BRAIN–BODY–ENERGY IN SILICO MODEL
-# Non-circular cognition, robust across seeds, networks, parameters
+# ROBUST BRAIN–BODY–ENERGY MODEL – NON-CIRCULAR COGNITION
+# Mediation fixed: Brain-Body Coherence → Energy → Cognition
 # ============================================================
 
 import numpy as np
@@ -20,15 +20,18 @@ import statsmodels.formula.api as smf
 SEED_GLOBAL = 42
 rng_global = np.random.default_rng(SEED_GLOBAL)
 
-NETWORK_SIZES = [40, 80, 120]           # Different network sizes
-N_NETWORKS_PER_SIZE = 3                 # Number of networks per size
-SEEDS_PER_NETWORK = 3                   # Seeds for robustness
-SUBJECTS_PER_SEED = 20                  # Subjects per seed
+NETWORK_SIZES = [40, 80, 120]
+N_NETWORKS_PER_SIZE = 3
+SEEDS_PER_NETWORK = 3
+SUBJECTS_PER_SEED = 20
+
 T = 200
 DT = 0.05
 STEPS = int(T / DT)
-K_BODY_VALUES = [0.03, 0.04, 0.05]      # Test robustness to K_BODY
-METABOLIC_GAIN_VALUES = [0.9, 1.0, 1.1] # Test metabolic parameter robustness
+
+K_BODY_VALUES = [0.03, 0.04, 0.05]
+METABOLIC_GAIN_VALUES = [0.9, 1.0, 1.1]
+NEURAL_GAIN_VALUES = [0.9, 1.0, 1.1]
 
 # ============================================================
 # NETWORK GENERATION
@@ -49,10 +52,10 @@ def small_world_network(N, k=6, p=0.2, seed=0):
                 while new==i or W[i,new]==1:
                     new=rng.integers(N)
                 W[i,new]=1
-    W=(W+W.T)/2
+    W = (W + W.T)/2
     np.fill_diagonal(W,0)
-    eig=np.linalg.eigvals(W)
-    W/=np.max(np.abs(eig))
+    eig = np.linalg.eigvals(W)
+    W /= np.max(np.abs(eig))
     return W
 
 def sample_traits(seed=None):
@@ -103,15 +106,20 @@ def simulate_brain(W, traits, heart, K_BODY=0.04):
     return phases, power
 
 # ============================================================
-# ENERGY
+# ENERGY MODELS
 # ============================================================
 
-def simulate_energy(brain_power, heart, resp, traits, metabolic_gain=1.0):
+def simulate_energy(brain_power, heart, resp, traits, metabolic_gain=1.0, model="full"):
     E = 1
     series = []
     decay = 0.02
     for t in range(STEPS):
-        production = 0.4 + 0.2*heart[t] + 0.1*resp[t] + 0.1*traits["metabolic"]*metabolic_gain
+        if model == "full":
+            production = 0.4 + 0.2*heart[t] + 0.1*resp[t] + 0.1*traits["metabolic"]*metabolic_gain
+        elif model == "feedforward":
+            production = 0.4 + 0.1*traits["metabolic"]*metabolic_gain
+        elif model == "null":
+            production = rng_global.normal(0.5,0.1)
         consumption = 0.05*brain_power[t]
         dE = production - consumption - decay*E
         E += dE*DT
@@ -138,17 +146,16 @@ def generate_cognition(traits):
     return 0.5*traits["neural_gain"] + 0.4*traits["metabolic"] + 0.2*rng_global.normal()
 
 # ============================================================
-# SUBJECT SIMULATION
+# SIMULATE SUBJECT
 # ============================================================
 
-def simulate_subject(W, age, K_BODY=0.04, metabolic_gain=1.0):
+def simulate_subject(W, age, K_BODY=0.04, metabolic_gain=1.0, energy_model="full"):
     traits = sample_traits(seed=int(age*10))
     heart, resp = simulate_body(traits)
     phases, power = simulate_brain(W, traits, heart, K_BODY=K_BODY)
     brain_global = power.mean(axis=1)
-    energy = simulate_energy(brain_global, heart, resp, traits, metabolic_gain=metabolic_gain)
+    energy = simulate_energy(brain_global, heart, resp, traits, metabolic_gain=metabolic_gain, model=energy_model)
 
-    # Metrics
     m = metastability(phases)
     coh_hr = brain_body_coherence(brain_global, heart)
     coh_resp = brain_body_coherence(brain_global, resp)
@@ -164,11 +171,12 @@ def simulate_subject(W, age, K_BODY=0.04, metabolic_gain=1.0):
         "EnergyEfficiency": eff,
         "Cognition": cog,
         "K_BODY": K_BODY,
-        "MetabolicGain": metabolic_gain
+        "MetabolicGain": metabolic_gain,
+        "EnergyModel": energy_model
     }
 
 # ============================================================
-# GENERATE DATASET ROBUST ACROSS PARAMETERS, SEEDS, NETWORKS
+# ROBUST DATASET GENERATION
 # ============================================================
 
 def generate_dataset_robust():
@@ -181,14 +189,15 @@ def generate_dataset_robust():
                     age = rng_global.uniform(20, 80)
                     for K_BODY in K_BODY_VALUES:
                         for metabolic_gain in METABOLIC_GAIN_VALUES:
-                            res = simulate_subject(W, age, K_BODY=K_BODY, metabolic_gain=metabolic_gain)
-                            res["NetworkSize"] = N
-                            res["NetworkID"] = f"{N}_{net_idx}"
-                            all_results.append(res)
+                            for energy_model in ["full","feedforward","null"]:
+                                res = simulate_subject(W, age, K_BODY=K_BODY, metabolic_gain=metabolic_gain, energy_model=energy_model)
+                                res["NetworkSize"] = N
+                                res["NetworkID"] = f"{N}_{net_idx}"
+                                all_results.append(res)
     return pd.DataFrame(all_results)
 
 # ============================================================
-# CROSS-VALIDATION AND MEDIATION
+# CROSS-VALIDATION
 # ============================================================
 
 def crossval_r2(df, predictor, target):
@@ -203,6 +212,10 @@ def crossval_r2(df, predictor, target):
         scores.append(r2_score(y[te], model.predict(X[te])))
     return np.mean(scores), np.std(scores)
 
+# ============================================================
+# MEDIATION: Brain-Body Coherence → Energy → Cognition
+# ============================================================
+
 def mediation_analysis(df, predictor, mediator, outcome):
     df_std = df[[predictor, mediator, outcome]].apply(lambda x: (x - x.mean())/x.std())
     med_model = smf.ols(f"{mediator} ~ {predictor}", data=df_std).fit()
@@ -213,30 +226,37 @@ def mediation_analysis(df, predictor, mediator, outcome):
     return {"Direct": direct, "Indirect": indirect, "Total": total}
 
 # ============================================================
-# RUN FULL ROBUST SIMULATION
+# RUN SIMULATION
 # ============================================================
 
-print("Running robust simulation, this may take several hours...")
+print("Running robust simulation... this may take hours!")
 df = generate_dataset_robust()
-print("Dataset complete:", len(df))
+print("Simulation complete. Total subjects:", len(df))
 
 # ============================================================
-# FOCUS ON KEY VARIABLES
+# CORRELATION MATRIX (KEY VARIABLES)
 # ============================================================
 
-key_vars = ["BrainHeartCoherence","BrainRespCoherence","EnergyStability","EnergyEfficiency","Cognition"]
-corr = df[key_vars].corr()
-print("\nCORRELATION MATRIX (Key Variables)\n", corr)
+key_vars = ["BrainHeartCoherence","BrainRespCoherence","EnergyEfficiency","EnergyStability","Cognition"]
+corr = df[df["EnergyModel"]=="full"][key_vars].corr()
+print("\nCorrelation matrix (full model):\n", corr)
 
-# MEDIATION: EnergyEfficiency -> BrainBodyCoherence -> Cognition
-med_hr = mediation_analysis(df, "EnergyEfficiency", "BrainHeartCoherence", "Cognition")
-med_resp = mediation_analysis(df, "EnergyEfficiency", "BrainRespCoherence", "Cognition")
+# ============================================================
+# MEDIATION ANALYSIS
+# ============================================================
+
+med_hr = mediation_analysis(df[df["EnergyModel"]=="full"], "BrainHeartCoherence", "EnergyEfficiency", "Cognition")
+med_resp = mediation_analysis(df[df["EnergyModel"]=="full"], "BrainRespCoherence", "EnergyEfficiency", "Cognition")
 med_table = pd.DataFrame([med_hr, med_resp], index=["BrainHeartCoherence","BrainRespCoherence"])
-print("\nMEDIATION RESULTS\n", med_table)
+print("\nMediation results (Brain-Body → Energy → Cognition):\n", med_table)
 
-# CROSS-VALIDATED R² for key predictors
+# ============================================================
+# CROSS-VALIDATED R²
+# ============================================================
+
+print("\nCross-validated R² (full model):")
 for var in ["BrainHeartCoherence","BrainRespCoherence","EnergyEfficiency","EnergyStability"]:
-    r2, std = crossval_r2(df, var, "Cognition")
+    r2, std = crossval_r2(df[df["EnergyModel"]=="full"], var, "Cognition")
     print(f"{var} -> Cognition : R² = {r2:.3f} ± {std:.3f}")
 
 # ============================================================
@@ -245,11 +265,7 @@ for var in ["BrainHeartCoherence","BrainRespCoherence","EnergyEfficiency","Energ
 
 age_bins = np.linspace(20,80,13)
 df["AgeBin"] = pd.cut(df["Age"], bins=age_bins)
-trend = df.groupby("AgeBin").agg({
-    "EnergyEfficiency":"mean",
-    "BrainHeartCoherence":"mean",
-    "BrainRespCoherence":"mean"
-}).reset_index()
+trend = df.groupby("AgeBin")[["EnergyEfficiency","BrainHeartCoherence","BrainRespCoherence"]].mean().reset_index()
 
 plt.figure(figsize=(8,5))
 plt.plot(trend.index, trend["EnergyEfficiency"], label="EnergyEfficiency", marker='o')
@@ -258,7 +274,14 @@ plt.plot(trend.index, trend["BrainRespCoherence"], label="BrainRespCoherence", m
 plt.xticks(ticks=range(len(trend)), labels=[f"{int(interval.left)}-{int(interval.right)}" for interval in trend["AgeBin"]], rotation=45)
 plt.ylabel("Mean Value")
 plt.xlabel("Age Bin")
-plt.title("Longitudinal Trends by Age")
+plt.title("Longitudinal Age Trends")
 plt.legend()
 plt.tight_layout()
 plt.show()
+
+# ============================================================
+# VULNERABILITY SUMMARY TABLE
+# ============================================================
+
+summary = df.groupby("EnergyModel")[key_vars].agg(["mean","std"])
+print("\nVulnerability summary table (mean ± SD by model):\n", summary)
