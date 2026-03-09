@@ -1,351 +1,311 @@
 # ============================================================
-# Brain-Body-Energy Generative Model
+# ROBUST BRAIN–BODY–ENERGY IN SILICO MODEL
+# WITH MODEL COMPARISON AND MEDIATION
 # ============================================================
 
 import numpy as np
 import pandas as pd
-from scipy.signal import hilbert
-from scipy.stats import pearsonr
 from sklearn.model_selection import KFold
-from sklearn.linear_model import LinearRegression, HuberRegressor
-from statsmodels.stats.multitest import multipletests
-from joblib import Parallel, delayed
+from sklearn.linear_model import LinearRegression
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import r2_score
 import matplotlib.pyplot as plt
 import seaborn as sns
-import os
-import pickle
-import statsmodels.api as sm
-from statsmodels.stats.mediation import Mediation
+import statsmodels.formula.api as smf
+import networkx as nx
 
-# ===========================
+# ============================================================
 # GLOBAL PARAMETERS
-# ===========================
+# ============================================================
+
 SEED_GLOBAL = 42
 rng_global = np.random.default_rng(SEED_GLOBAL)
 
-NETWORK_SIZES = [40, 80, 120]
-N_NETWORKS_PER_SIZE = 5
-SEEDS_PER_NETWORK = 50
-N_SUBJECTS_PER_SEED = 200
-T = 500
+NETWORK_SIZES = [40, 80]
+N_NETWORKS_PER_SIZE = 3
+SEEDS_PER_NETWORK = 10
+SUBJECTS_PER_SEED = 50
+
+T = 200
 DT = 0.05
 STEPS = int(T / DT)
-N_PERM = 100
+K_BODY = 0.04
 
-K_BODY = 0.05
-K_ENERGY = 0.05
-
-SAVE_DIR = "BrainBodyEnergy_Publication"
-os.makedirs(SAVE_DIR, exist_ok=True)
-
-# ===========================
+# ============================================================
 # NETWORK GENERATION
-# ===========================
-def small_world(N, k=6, p=0.2, seed=None):
+# ============================================================
+
+def small_world_network(N, k=6, p=0.2, seed=0):
     rng = np.random.default_rng(seed)
-    W = np.zeros((N, N))
+    W = np.zeros((N,N))
     for i in range(N):
-        for j in range(1, k//2 + 1):
-            W[i, (i+j) % N] = 1
-            W[i, (i-j) % N] = 1
-    # Rewiring
+        for j in range(1,k//2+1):
+            W[i,(i+j)%N] = 1
+            W[i,(i-j)%N] = 1
     for i in range(N):
         for j in range(N):
-            if W[i,j] == 1 and rng.random() < p:
-                W[i,j] = 0
-                new_j = rng.integers(N)
-                while new_j == i or W[i,new_j] == 1:
-                    new_j = rng.integers(N)
-                W[i,new_j] = 1
-    W = (W + W.T)/2
+            if W[i,j]==1 and rng.random()<p:
+                W[i,j]=0
+                new=rng.integers(N)
+                while new==i or W[i,new]==1:
+                    new=rng.integers(N)
+                W[i,new]=1
+    W=(W+W.T)/2
     np.fill_diagonal(W,0)
-    eig = np.linalg.eigvals(W)
-    W = W / np.max(np.abs(eig))
+    eig=np.linalg.eigvals(W)
+    W/=np.max(np.abs(eig))
     return W
 
-# ===========================
-# BODY OSCILLATORS
-# ===========================
-def simulate_body(seed):
+# ============================================================
+# TRAITS AND BODY OSCILLATIONS
+# ============================================================
+
+def sample_traits(seed=None):
     rng = np.random.default_rng(seed)
-    heart_phase, resp_phase = 0, 0
-    heart, resp = [], []
+    return {
+        "autonomic": rng.normal(),
+        "metabolic": rng.normal(),
+        "neural_gain": rng.normal()
+    }
+
+def simulate_body(traits):
+    heart_phase = 0
+    resp_phase = 0
+    heart = []
+    resp = []
+    hr_base = 0.9 + 0.05*traits["autonomic"]
+    rr_base = 0.25 + 0.03*traits["autonomic"]
     for t in range(STEPS):
-        heart_phase += 0.9 * DT + rng.normal(scale=0.01)
-        resp_phase += 0.25 * DT + rng.normal(scale=0.01)
+        heart_phase += hr_base*DT + rng_global.normal(scale=0.01)
+        resp_phase += rr_base*DT + rng_global.normal(scale=0.01)
         heart.append(np.sin(heart_phase))
         resp.append(np.sin(resp_phase))
     return np.array(heart), np.array(resp)
 
-# ===========================
+# ============================================================
+# BRAIN DYNAMICS
+# ============================================================
+
+def simulate_brain(W, traits, heart):
+    N = W.shape[0]
+    z = rng_global.normal(size=N) + 1j*rng_global.normal(size=N)
+    omega = rng_global.uniform(0.04,0.07,N)
+    gain = 0.02 + 0.01*traits["neural_gain"]
+    phases = np.zeros((STEPS,N))
+    power = np.zeros((STEPS,N))
+    row_sum = W.sum(axis=1)
+    for t in range(STEPS):
+        coupling = 0.6*(W@z - row_sum*z)
+        dz = (gain + 1j*omega - np.abs(z)**2)*z + coupling
+        dz += K_BODY*heart[t]
+        z += dz*DT + 0.02*np.sqrt(DT)*(rng_global.normal(size=N) + 1j*rng_global.normal(size=N))
+        phases[t] = np.angle(z)
+        power[t] = np.abs(z)**2
+    return phases, power
+
+# ============================================================
 # ENERGY DYNAMICS
-# ===========================
-def simulate_energy(brain_power, heart, resp):
+# ============================================================
+
+def simulate_energy(brain_power, heart, resp, traits):
     E = 1
-    E_series = []
+    series = []
+    metabolic = traits["metabolic"]
     decay = 0.02
     for t in range(STEPS):
-        prod = 0.4 + 0.2*heart[t] + 0.1*resp[t]
-        cons = 0.05 * brain_power[t]
-        dE = prod - cons - decay*E
+        production = 0.4 + 0.2*heart[t] + 0.1*resp[t] + 0.1*metabolic
+        consumption = 0.05*brain_power[t]
+        dE = production - consumption - decay*E
         E += dE*DT
-        E_series.append(E)
-    return np.array(E_series)
+        series.append(E)
+    return np.array(series)
 
-# ===========================
-# BRAIN DYNAMICS
-# ===========================
-def simulate_brain(W, G, noise, heart, energy, seed):
-    rng = np.random.default_rng(seed)
-    N = W.shape[0]
-    z = rng.normal(size=N) + 1j*rng.normal(size=N)
-    omega = rng.uniform(0.04, 0.07, N)
-    row = W.sum(axis=1)
-    traj_power = np.zeros((STEPS, N))
-    for t in range(STEPS):
-        coupling = G*(W @ z - row*z)
-        dz = (0.02 + 1j*omega - np.abs(z)**2)*z + coupling
-        dz += K_BODY*heart[t] + K_ENERGY*energy[t]
-        dz += noise*np.sqrt(DT)*(rng.normal(size=N)+1j*rng.normal(size=N))
-        z += dz*DT
-        traj_power[t] = np.abs(z)**2
-    return traj_power
-
-# ===========================
+# ============================================================
 # METRICS
-# ===========================
-def metastability(traj_power):
-    phase = np.angle(traj_power.astype(complex))
-    R = np.abs(np.mean(np.exp(1j*phase), axis=1))
+# ============================================================
+
+def metastability(phases):
+    R = np.abs(np.mean(np.exp(1j*phases), axis=1))
     return np.std(R)
 
-def coherence(sig1, sig2):
-    phase1 = np.angle(hilbert(sig1))
-    phase2 = np.angle(hilbert(sig2))
+def brain_body_coherence(brain, heart):
+    phase1 = np.angle(np.exp(1j*brain))
+    phase2 = np.angle(np.exp(1j*heart))
     return np.abs(np.mean(np.exp(1j*(phase1-phase2))))
 
-def predictive_metric(traj_power):
-    amp = traj_power
-    diff = np.diff(np.mean(amp, axis=1))
+def predictive_complexity(power):
+    signal = power.mean(axis=1)
+    diff = np.diff(signal)
     return np.sqrt(np.mean(diff**2))
 
 def energy_metrics(E):
     return np.std(E), np.mean(E)
 
-# ===========================
-# NON-CIRCULAR SYNTHETIC COGNITION
-# ===========================
-def generate_cognition(heart, resp, energy):
-    """
-    Cognition independent of brain metrics.
-    Scientifically reasonable: function of body signals and energy stats.
-    """
-    energy_mean = np.mean(energy)
-    energy_std = np.std(energy)
-    heart_mean = np.mean(heart)
-    resp_mean = np.mean(resp)
-    rng = np.random.default_rng()
-    cognition = 0.4*energy_mean - 0.2*energy_std + 0.2*heart_mean + 0.2*resp_mean + rng.normal(scale=0.05)
-    return cognition
+def generate_cognition(traits):
+    return 0.5*traits["neural_gain"] + 0.4*traits["metabolic"] + 0.2*rng_global.normal()
 
-# ===========================
-# SIMULATE SUBJECT
-# ===========================
-def simulate_subject(W, network_id, seed, subject_id):
-    rng = np.random.default_rng(seed+subject_id)
-    age = rng.uniform(20,80)
-    G = rng.uniform(0.2,1.0)
-    noise = rng.uniform(0.01,0.05)
+# ============================================================
+# SINGLE SUBJECT SIMULATION WITH MULTIPLE MODELS
+# ============================================================
 
-    heart, resp = simulate_body(seed+subject_id)
-    brain_power_dummy = np.ones(STEPS)
-    energy_dummy = simulate_energy(brain_power_dummy, heart, resp)
+def simulate_subject_models(W, seed_subj):
+    traits = sample_traits(seed_subj)
+    heart, resp = simulate_body(traits)
+    phases, power = simulate_brain(W, traits, heart)
+    brain_global = power.mean(axis=1)
+    energy = simulate_energy(brain_global, heart, resp, traits)
 
-    traj_power = simulate_brain(W, G, noise, heart, energy_dummy, seed+subject_id)
-    brain_global = np.mean(traj_power, axis=1)
-
-    m = metastability(traj_power)
-    coh = coherence(brain_global, heart)
-    fm = predictive_metric(traj_power)
-
-    brain_power = np.mean(traj_power, axis=1)
-    energy = simulate_energy(brain_power, heart, resp)
+    # Metrics
+    m = metastability(phases)
+    coh = brain_body_coherence(brain_global, heart)
+    comp = predictive_complexity(power)
     stab, eff = energy_metrics(energy)
+    cog = generate_cognition(traits)
 
-    cognition = generate_cognition(heart, resp, energy)
+    # Models
+    # 1. Full model (Energy + Heart)
+    vuln_full = rng_global.normal() - 0.5*eff + 0.5*stab
+
+    # 2. Free-energy / Forward modeling only
+    vuln_fe = rng_global.normal() - 0.5*comp
+
+    # 3. Null model
+    vuln_null = rng_global.normal()
 
     return {
-        "NetworkID": network_id,
-        "Seed": seed,
-        "SubjectID": subject_id,
-        "Age": age,
-        "G": G,
-        "Noise": noise,
-        "HeartMean": np.mean(heart),
-        "RespMean": np.mean(resp),
         "Metastability": m,
         "BrainHeartCoherence": coh,
-        "ForwardModeling": fm,
+        "ForwardModeling": comp,
         "EnergyStability": stab,
         "EnergyEfficiency": eff,
-        "SyntheticCognition": cognition
+        "Cognition": cog,
+        "Vulnerability_Full": vuln_full,
+        "Vulnerability_FE": vuln_fe,
+        "Vulnerability_Null": vuln_null
     }
 
-# ===========================
-# GENERATE DATASET
-# ===========================
+# ============================================================
+# DATASET GENERATION
+# ============================================================
+
 def generate_dataset():
     all_results = []
-    network_counter = 0
     for N in NETWORK_SIZES:
         for net_idx in range(N_NETWORKS_PER_SIZE):
-            W = small_world(N, seed=net_idx)
-            for seed in range(SEEDS_PER_NETWORK):
-                results = Parallel(n_jobs=-1)(delayed(simulate_subject)(
-                    W, network_counter, seed, subj
-                ) for subj in range(N_SUBJECTS_PER_SEED))
-                df_seed = pd.DataFrame(results)
-                df_seed['NullModel'] = np.random.normal(size=len(df_seed))
-                all_results.append(df_seed)
-            network_counter +=1
-    df_all = pd.concat(all_results, ignore_index=True)
-    df_all.to_csv(os.path.join(SAVE_DIR, "dataset_full.csv"), index=False)
-    return df_all
+            W = small_world_network(N, seed=net_idx)
+            for seed_subj in range(SEEDS_PER_NETWORK):
+                for subj in range(SUBJECTS_PER_SEED):
+                    result = simulate_subject_models(W, seed_subj + subj)
+                    result["NetworkSize"] = N
+                    result["NetworkID"] = f"{N}_{net_idx}"
+                    all_results.append(result)
+    return pd.DataFrame(all_results)
 
-# ===========================
-# CROSS-VALIDATION & PERMUTATION
-# ===========================
-def crossval_r2(df, pred, target, robust=False):
-    X = df[[pred,'Age']].values
+# ============================================================
+# CROSS-VALIDATION
+# ============================================================
+
+def crossval_r2(df, predictor, target):
+    X = df[[predictor]].values
     y = df[target].values
-    kf = KFold(10, shuffle=True, random_state=SEED_GLOBAL)
-    r2s = []
+    scaler = StandardScaler()
+    X = scaler.fit_transform(X)
+    kf = KFold(5, shuffle=True, random_state=SEED_GLOBAL)
+    scores = []
     for tr, te in kf.split(X):
-        if robust:
-            model = HuberRegressor().fit(X[tr], y[tr])
-        else:
-            model = LinearRegression().fit(X[tr], y[tr])
-        y_pred = model.predict(X[te])
-        r, _ = pearsonr(y_pred, y[te])
-        r2s.append(r**2)
-    return np.mean(r2s), np.percentile(r2s,2.5), np.percentile(r2s,97.5)
+        model = LinearRegression()
+        model.fit(X[tr], y[tr])
+        pred = model.predict(X[te])
+        scores.append(r2_score(y[te], pred))
+    return np.mean(scores), np.std(scores)
 
-def permutation_test(df, pred, target, n_perm=100):
-    real, _, _ = crossval_r2(df, pred, target)
-    perm_r2s = []
+# ============================================================
+# PERMUTATION TEST
+# ============================================================
+
+def permutation_test(df, predictor, target, n_perm=100):
+    real, _ = crossval_r2(df, predictor, target)
+    null = []
     for _ in range(n_perm):
-        df_perm = df.copy()
-        df_perm[pred] = np.random.permutation(df_perm[pred])
-        r2_perm, _, _ = crossval_r2(df_perm, pred, target)
-        perm_r2s.append(r2_perm)
-    p_val = np.mean(np.array(perm_r2s) >= real)
-    return real, p_val
+        perm = df.copy()
+        perm[target] = rng_global.permutation(perm[target])
+        r2, _ = crossval_r2(perm, predictor, target)
+        null.append(r2)
+    p = np.mean(np.array(null) >= real)
+    return real, p
 
-# ===========================
+# ============================================================
 # MEDIATION ANALYSIS
-# ===========================
-def run_mediation(df, predictor, mediator, outcome):
-    # Predictor -> Mediator -> Outcome
-    X = sm.add_constant(df[[predictor,'Age']])
-    M = df[mediator]
-    Y = df[outcome]
-    # Step 1: effect of predictor on mediator
-    model_m = sm.OLS(M, X).fit()
-    # Step 2: effect of predictor and mediator on outcome
-    X2 = sm.add_constant(df[[predictor, mediator, 'Age']])
-    model_y = sm.OLS(Y, X2).fit()
-    med = Mediation(model_y, model_m, mediator_name=mediator, exposure_name=predictor)
-    med_res = med.fit(n_rep=100)
-    return med_res
+# ============================================================
 
-# ===========================
-# MAIN: GENERATE DATA & ANALYSES
-# ===========================
-print("Generating dataset...")
+def mediation_analysis(df, predictor, mediator, outcome):
+    df_std = df[[predictor, mediator, outcome]].copy().apply(lambda x: (x - x.mean())/x.std())
+    med_model = smf.ols(f"{mediator} ~ {predictor}", data=df_std).fit()
+    out_model = smf.ols(f"{outcome} ~ {predictor} + {mediator}", data=df_std).fit()
+    indirect = med_model.params[predictor] * out_model.params[mediator]
+    direct = out_model.params[predictor]
+    total = direct + indirect
+    return {"Direct": direct, "Indirect": indirect, "Total": total}
+
+# ============================================================
+# RUN ROBUST SIMULATION
+# ============================================================
+
+print("Generating dataset with model comparison...")
 df = generate_dataset()
-print("Dataset generated with", len(df), "subjects")
+print("Dataset size:", len(df))
 
-# -----------------------------
-# Predictive models
-# -----------------------------
-predictors = ["Metastability", "BrainHeartCoherence", "ForwardModeling", "NullModel"]
-target = "SyntheticCognition"
+# ============================================================
+# SUMMARY TABLE
+# ============================================================
 
-results = []
-for pred in predictors:
-    r2_mean, r2_low, r2_high = crossval_r2(df, pred, target)
-    real_r2, p_val = permutation_test(df, pred, target)
-    results.append({
-        "Predictor": pred,
-        "Target": target,
-        "CV_R2": r2_mean,
-        "CI_lower": r2_low,
-        "CI_upper": r2_high,
-        "Permutation_p": p_val
-    })
+summary = df.describe().T
 
-res_df = pd.DataFrame(results)
-res_df.to_csv(os.path.join(SAVE_DIR,"predictive_models_cognition.csv"), index=False)
-print(res_df)
+# Cross-validation & permutation for all vulnerability models
+for model in ["Vulnerability_Full","Vulnerability_FE","Vulnerability_Null"]:
+    r2, p = permutation_test(df, "EnergyEfficiency", model)
+    summary[f"CrossvalR2_{model}"] = r2
+    summary[f"Perm_p_{model}"] = p
 
-# -----------------------------
-# Mediation analysis: Models -> EnergyEfficiency -> Cognition
-# -----------------------------
-med_results = []
-for pred in predictors:
-    med_res = run_mediation(df, predictor=pred, mediator="EnergyEfficiency", outcome="SyntheticCognition")
-    med_results.append({
-        "Predictor": pred,
-        "ACME": med_res.acme_avg,
-        "ADE": med_res.ade_avg,
-        "TotalEffect": med_res.total_effect,
-        "PropMediated": med_res.prop_med
-    })
+# Mediation: BrainHeartCoherence as mediator for each vulnerability
+for model in ["Vulnerability_Full","Vulnerability_FE","Vulnerability_Null"]:
+    med = mediation_analysis(df, "EnergyEfficiency", "BrainHeartCoherence", model)
+    summary[f"Mediation_Direct_{model}"] = med["Direct"]
+    summary[f"Mediation_Indirect_{model}"] = med["Indirect"]
+    summary[f"Mediation_Total_{model}"] = med["Total"]
 
-med_df = pd.DataFrame(med_results)
-med_df.to_csv(os.path.join(SAVE_DIR,"mediation_results.csv"), index=False)
-print(med_df)
+print("\nFINAL RESULTS TABLE WITH MODEL COMPARISON AND MEDIATION\n")
+print(summary)
 
-# -----------------------------
-# FIGURES: Publication-level
-# -----------------------------
-sns.set(style="whitegrid")
+# ============================================================
+# FIGURES
+# ============================================================
 
-# Cognition distribution
-plt.figure(figsize=(7,5))
-sns.histplot(df['SyntheticCognition'], kde=True, bins=50, color='skyblue')
-plt.title("Synthetic Cognition Distribution")
-plt.xlabel("Synthetic Cognition")
-plt.ylabel("Count")
-plt.tight_layout()
-plt.savefig(os.path.join(SAVE_DIR,"fig_cognition_distribution.png"), dpi=300)
-plt.show()
-
-# Scatter: EnergyEfficiency vs Cognition
-plt.figure(figsize=(7,5))
-sns.scatterplot(x='EnergyEfficiency', y='SyntheticCognition', data=df, alpha=0.4)
-sns.regplot(x='EnergyEfficiency', y='SyntheticCognition', data=df, scatter=False, color='red')
-plt.title("Energy Efficiency vs Cognition")
-plt.tight_layout()
-plt.savefig(os.path.join(SAVE_DIR,"fig_energy_cognition.png"), dpi=300)
+# Scatter EnergyEfficiency vs Cognitive Vulnerability
+plt.figure(figsize=(8,5))
+sns.scatterplot(x="EnergyEfficiency", y="Vulnerability_Full", data=df, alpha=0.4, label="Full Model")
+sns.scatterplot(x="EnergyEfficiency", y="Vulnerability_FE", data=df, alpha=0.4, label="Free-Energy")
+sns.scatterplot(x="EnergyEfficiency", y="Vulnerability_Null", data=df, alpha=0.4, label="Null Model")
+plt.title("Energy Efficiency vs Cognitive Vulnerability (All Models)")
+plt.legend()
 plt.show()
 
 # Correlation heatmap
-metrics = ["Metastability","BrainHeartCoherence","ForwardModeling","EnergyStability","EnergyEfficiency","SyntheticCognition"]
 plt.figure(figsize=(8,6))
-sns.heatmap(df[metrics].corr(), annot=True, cmap='coolwarm', vmin=-1, vmax=1)
-plt.title("Brain-Body-Energy Metrics Correlation")
-plt.tight_layout()
-plt.savefig(os.path.join(SAVE_DIR,"fig_correlation_heatmap.png"), dpi=300)
+sns.heatmap(df.corr(), annot=True, cmap="coolwarm", vmin=-1, vmax=1)
+plt.title("Brain-Body-Energy Metrics Correlation Matrix")
 plt.show()
 
-# Mediation plot
-plt.figure(figsize=(7,5))
-for i,row in med_df.iterrows():
-    plt.bar(row['Predictor'], row['TotalEffect'], color='skyblue', alpha=0.6, label='TotalEffect')
-    plt.bar(row['Predictor'], row['ACME'], color='orange', alpha=0.6, label='IndirectEffect')
-plt.ylabel("Effect Size")
-plt.title("Mediation: Models -> EnergyEfficiency -> Cognition")
-plt.tight_layout()
-plt.savefig(os.path.join(SAVE_DIR,"fig_mediation.png"), dpi=300)
+# Mediation diagram example for Full model
+med_full = mediation_analysis(df, "EnergyEfficiency", "BrainHeartCoherence", "Vulnerability_Full")
+G = nx.DiGraph()
+G.add_edge("EnergyEfficiency", "BrainHeartCoherence", label=f"{med_full['Direct']:.2f}")
+G.add_edge("BrainHeartCoherence", "Vulnerability_Full", label=f"{med_full['Indirect']:.2f}")
+G.add_edge("EnergyEfficiency", "Vulnerability_Full", label=f"{med_full['Total']:.2f}")
+plt.figure(figsize=(6,4))
+pos = {"EnergyEfficiency": (0,0), "BrainHeartCoherence": (1,0), "Vulnerability_Full": (2,0)}
+nx.draw(G, pos, with_labels=True, node_size=3000, node_color="skyblue", arrowsize=20)
+edge_labels = nx.get_edge_attributes(G, 'label')
+nx.draw_networkx_edge_labels(G, pos, edge_labels=edge_labels)
+plt.title("Mediation: EnergyEfficiency -> BrainHeartCoherence -> Vulnerability_Full")
 plt.show()
