@@ -85,7 +85,7 @@ The script automatically detects your CPU cores and runs simulations in parallel
 
 Results are saved as .csv files for analysis.
 
-🔧 Dependencies
+Dependencies
 
 Python ≥ 3.10
 
@@ -105,7 +105,7 @@ matplotlib
 
 seaborn
 
-⚡ Notes
+Notes
 
 Fully in-silico — no human or animal data is required.
 
