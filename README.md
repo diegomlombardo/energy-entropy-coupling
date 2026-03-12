@@ -6,7 +6,7 @@ Scientific Motivation
 
 Traditional approaches to cognitive vulnerability often focus on molecular or pathological causes. Here, we take a different/complemetary perspective:
 
-Cognition is an emergent property of the whole brain–body system.
+Cognition is an emergent propert. This is the part in which we don't have still a whole matematical model of human cognition and improuve this part is a ongoing work.. 
 
 Large-scale brain dynamics are constrained by energy balance and autonomic signals.
 
