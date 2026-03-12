@@ -1,16 +1,16 @@
 Brain–Body–Energy Generative Model
 
-This repository contains a fully parallelized in-silico simulation framework designed to explore how brain–body–energy interactions shape cognition across lifespan-like cohorts. The model is inspired by systems-level theories suggesting that cognitive outcomes emerge not only from pathology, but from how metabolic stability and neural dynamics interact across scales.
+This repository contains a fully parallelized in-silico simulation framework designed to explore how brain–body–energy interactions shape cognition across lifespan-like cohorts. The model is inspired by systems-level theories suggesting that cognitive outcomes emerge not only from pathology, but from how metabolic stability and neural dynamics interact across scales. Here the pre-pint: http://dx.doi.org/10.2139/ssrn.6391438
 
 Scientific Motivation
 
 Traditional approaches to cognitive vulnerability often focus on molecular or pathological causes. Here, we take a different/complemetary perspective:
 
-Cognition is an emergent propert. This is the part in which we don't have still a whole matematical model of human cognition and improuve this part is a ongoing work.. 
+Cognition: We don’t yet have one complete mathematical model that fully explains how the human brain works. How we model it often depends on what we think the brain actually does. Making these models better is still an active and exciting area of research.
 
 Large-scale brain dynamics are constrained by energy balance and autonomic signals.
 
-Cognitive performance depends on the alignment between neural metastability and peripheral energy fluctuations, captured by what we call the Energy Coupling
+Cognitive performance depends on the alignment between neural metastability and peripheral energy fluctuations, captured by what we call the Energy Coupling, under this view. 
 
 By simulating synthetic cohorts across a wide age range, we can explore how coupling strength influences cognition, revealing patterns like the inverted-U trajectory, where optimal cognition emerges at intermediate coupling and declines at extremes.
 
