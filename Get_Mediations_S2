@@ -1,0 +1,43 @@
+# ============================================================
+# Figure 2: Publication-ready mediation plot with readable axes
+# ============================================================
+
+plt.figure(figsize=(10,6), dpi=300)
+colors = sns.color_palette("tab10", len(predictors))
+
+for i, pred in enumerate(predictors):
+    ages = np.array(mediation_age[pred]["ages"])
+    mean = np.array(mediation_age[pred]["mean"])
+    lower = np.array(mediation_age[pred]["lower"])
+    upper = np.array(mediation_age[pred]["upper"])
+    
+    # Scale to percentage of max indirect effect for readability
+    scale = np.max(np.abs(mean))
+    if scale == 0:  # avoid division by zero
+        scale = 1.0
+    mean_pct = 100 * mean / scale
+    lower_pct = 100 * lower / scale
+    upper_pct = 100 * upper / scale
+    
+    plt.plot(ages, mean_pct, label=pred, color=colors[i], lw=2, marker='o')
+    plt.fill_between(ages, lower_pct, upper_pct, color=colors[i], alpha=0.2)
+
+# Axis labels with variable names
+plt.xlabel("Age (years)", fontsize=12)
+plt.ylabel("Indirect Effect (%) via Energy Efficiency", fontsize=12)
+plt.title("Figure 2: Bootstrap estimates of the indirect effect across age bins", fontsize=14)
+
+# X-axis ticks: show every other bin
+plt.xticks(ages[::2], rotation=45)
+plt.yticks(fontsize=10)
+
+# Grid, legend
+plt.grid(alpha=0.3, which='both')
+plt.legend(title="Predictor", fontsize=10)
+plt.tight_layout()
+
+# Save figure
+output_path = os.path.join(FIG_DIR,"Figure2_mediation_age_percentage.png")
+plt.savefig(output_path)
+plt.show()
+print(f"Figure 2 saved: {output_path}")
