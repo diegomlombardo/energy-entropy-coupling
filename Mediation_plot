@@ -1,0 +1,101 @@
+import pandas as pd
+import numpy as np
+import os
+import matplotlib.pyplot as plt
+import networkx as nx
+from sklearn.linear_model import LinearRegression
+
+# Paths
+SAVE_DIR = "/Users/diegolombardoisadie20252/Desktop/Marie Curie 2026/SATURDAY_07_25/BrainBodyEnergy_Publication"
+CSV_FILE = os.path.join(SAVE_DIR, "dataset_full.csv")
+FIG_DIR = os.path.join(SAVE_DIR, "Resutls_conf")
+os.makedirs(FIG_DIR, exist_ok=True)
+
+# Load data
+df = pd.read_csv(CSV_FILE)
+
+# Variables
+predictors = ["NullModel", "BrainHeartCoherence", "ForwardModeling"]
+mediator = "EnergyEfficiency"
+outcome = "SyntheticCognition"
+
+# Compute mediation paths function
+def compute_paths(X, M, Y):
+    X = np.array(X)
+    M = np.array(M)
+    Y = np.array(Y)
+
+    model_a = LinearRegression().fit(X.reshape(-1,1), M)
+    a = model_a.coef_[0]
+
+    XY = np.column_stack([X, M])
+    model_b = LinearRegression().fit(XY, Y)
+    c_prime = model_b.coef_[0]
+    b = model_b.coef_[1]
+
+    indirect = a * b
+    return a, b, c_prime, indirect
+
+# Compute for all predictors
+results = {}
+for pred in predictors:
+    X = df[pred].values
+    M = df[mediator].values
+    Y = df[outcome].values
+    results[pred] = compute_paths(X, M, Y)
+
+# Create directed graph
+G = nx.DiGraph()
+
+# Add nodes with sizes and colors
+node_sizes = 3000
+colors = {
+    "SyntheticCognition": "lightcoral",
+    "EnergyEfficiency": "lightgreen",
+}
+for pred in predictors:
+    colors[pred] = "skyblue"
+
+for node in predictors + [mediator, outcome]:
+    G.add_node(node)
+
+# Add edges for mediation paths
+for pred, (a,b,c_prime,indirect) in results.items():
+    # Predictor -> Mediator
+    G.add_edge(pred, mediator, label=f"a={a:.2f}")
+
+    # Mediator -> Outcome
+    G.add_edge(mediator, outcome, label=f"b={b:.2f}")
+
+    # Predictor -> Outcome (direct)
+    G.add_edge(pred, outcome, label=f"c'={c_prime:.2f}")
+
+# Position nodes manually for nice layout
+pos = {
+    "NullModel": (0,2),
+    "BrainHeartCoherence": (0,1),
+    "ForwardModeling": (0,0),
+    "EnergyEfficiency": (1,1),
+    "SyntheticCognition": (2,1),
+}
+
+plt.figure(figsize=(10,6))
+nx.draw_networkx_nodes(G, pos, node_color=[colors[n] for n in G.nodes()], node_size=node_sizes)
+nx.draw_networkx_labels(G, pos, font_size=10, font_weight="bold")
+
+# Draw edges and labels
+nx.draw_networkx_edges(G, pos, arrowsize=20, arrowstyle='-|>')
+
+edge_labels = nx.get_edge_attributes(G, 'label')
+nx.draw_networkx_edge_labels(G, pos, edge_labels=edge_labels, font_color='black', font_size=9)
+
+plt.title("Mediation Model: Predictors → EnergyEfficiency → SyntheticCognition", fontsize=14)
+plt.axis('off')
+plt.tight_layout()
+
+# Save figure
+filename = os.path.join(FIG_DIR, "mediation_network_diagram.png")
+plt.savefig(filename, dpi=300)
+plt.show()
+
+print(f"Mediation network diagram saved to {filename}")
