@@ -120,4 +120,4 @@ Brain–Body–Energy Generative Model
 
 References
 
-Lombardo, D.M. (2026). Energy Coupling in Brain–Body Systems: An In-Silico Approach to Lifespan Cognitive and Computational Vulnerability.
+Lombardo, Diego, Energy Coupling in Brain-Body Systems: An In-Silico Approach to Lifespan Cognitive and Computational Vulnerability (March 08, 2026). Available at SSRN: https://ssrn.com/abstract=6391438 or http://dx.doi.org/10.2139/ssrn.6391438
