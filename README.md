@@ -113,14 +113,6 @@ Designed for exploring mechanistic hypotheses linking energy, brain dynamics, an
 
 Modular design allows easy extensions to new network topologies, coupling parameters, and cognitive metrics.
 
-If you want, I can also write a short, one-paragraph “lay summary” for the README front page — something a non-specialist could read in a few seconds and immediately understand the purpose and value of this model.
-
-Do you want me to do that?
-
-add the reference please 
-
-Absolutely! Here’s your fluid, human-readable README description with the reference added at the end:
-
 Brain–Body–Energy Generative Model
 
 This repository contains a fully parallelized in-silico simulation framework designed to explore how brain–body–energy interactions shape cognition across lifespan-like cohorts. The model is inspired by systems-level theories suggesting that cognitive outcomes emerge not only from pathology, but from how metabolic stability and neural dynamics interact across scales.
