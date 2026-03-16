@@ -8,9 +8,11 @@ Traditional approaches to cognitive vulnerability often focus on molecular or pa
 
 Cognition: We don’t yet have one complete mathematical model that fully explains how the human brain works. How we model it often depends on what we think the brain actually does, and there is not unified theory for this. Making these models better is still an active and exciting area of research.
 
-Large-scale brain dynamics are constrained by energy balance and autonomic signals.
+Here I propose: A) Large-scale brain dynamics are constrained by energy balance and physiological inputs.
 
-Cognitive performance depends on the alignment between neural metastability and peripheral energy fluctuations, captured by what we call the Energy Coupling, under this view. 
+B) Cognitive performance depends on the alignment between neural metastability and peripheral energy fluctuations, captured by what we call the Energy Coupling, under this view. 
+
+No opposed to active inference, just complementary even do from the ontogenetic point of view is different.
 
 By simulating synthetic cohorts across a wide age range, we can explore how coupling strength influences cognition, revealing patterns like the inverted-U trajectory, where optimal cognition emerges at intermediate coupling and declines at extremes.
 
