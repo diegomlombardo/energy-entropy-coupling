@@ -1,0 +1,350 @@
+import os
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+from joblib import Parallel, delayed
+from sklearn.linear_model import LinearRegression
+from scipy.stats import pearsonr
+import multiprocessing
+
+# ============================================================
+# GLOBAL PARAMETERS
+# ============================================================
+
+NETWORK_SIZES = [40, 80, 120]
+N_NETWORKS_PER_SIZE = 5
+SEEDS_PER_NETWORK = 20
+N_SUBJECTS_PER_SEED = 50
+
+T = 500
+DT = 0.05
+STEPS = int(T / DT)
+
+K_BODY_VALS = [0.03, 0.05, 0.07]
+K_ENERGY_VALS = [0.03, 0.05, 0.07]
+
+# -----------------------------
+# Directories
+# -----------------------------
+SAVE_DIR = "BrainBodyEnergy_Publication"
+FIG_DIR = os.path.join(SAVE_DIR, "figures")
+
+os.makedirs(SAVE_DIR, exist_ok=True)
+os.makedirs(FIG_DIR, exist_ok=True)
+
+print(f"Data will be saved in: {SAVE_DIR}")
+print(f"Figures will be saved in: {FIG_DIR}")
+
+# -----------------------------
+# Parallelization
+# -----------------------------
+N_CORES = multiprocessing.cpu_count()
+SEED_GLOBAL = 42
+rng_global = np.random.default_rng(SEED_GLOBAL)
+
+# ============================================================
+# NETWORK GENERATORS
+# ============================================================
+
+def small_world(N, k=6, p=0.2, seed=None):
+    rng = np.random.default_rng(seed)
+    W = np.zeros((N, N))
+    for i in range(N):
+        for j in range(1, k//2+1):
+            W[i, (i+j)%N] = 1
+            W[i, (i-j)%N] = 1
+    for i in range(N):
+        for j in range(N):
+            if W[i,j]==1 and rng.random()<p:
+                W[i,j]=0
+                new=rng.integers(N)
+                while new==i or W[i,new]==1:
+                    new=rng.integers(N)
+                W[i,new]=1
+    W = (W+W.T)/2
+    np.fill_diagonal(W,0)
+    return W
+
+def random_network(N, seed=None):
+    rng = np.random.default_rng(seed)
+    W = rng.random((N,N))
+    W = (W+W.T)/2
+    W[W<0.9] = 0
+    np.fill_diagonal(W,0)
+    return W
+
+def lattice_network(N,k=6):
+    W = np.zeros((N,N))
+    for i in range(N):
+        for j in range(1, k//2+1):
+            W[i,(i+j)%N]=1
+            W[i,(i-j)%N]=1
+    return W
+
+def normalize_connectivity(W):
+    eig = np.linalg.eigvals(W)
+    return W / np.max(np.abs(eig))
+
+def graph_laplacian(W):
+    return np.diag(W.sum(axis=1)) - W
+
+# ============================================================
+# BODY OSCILLATORS
+# ============================================================
+
+def simulate_body(seed):
+    rng = np.random.default_rng(seed)
+    heart_phase = 0
+    heart_freq = 1.2
+    heart = []
+    for _ in range(STEPS):
+        heart_phase += 2*np.pi*heart_freq*DT + rng.normal(0,0.01)
+        heart.append(np.sin(heart_phase))
+    return np.array(heart)
+
+# ============================================================
+# AGE MODULATION
+# ============================================================
+
+def age_modulation(age, rng):
+    G = 0.6 * np.exp(-((age-40)/30)**2) + rng.normal(0,0.05)
+    noise = 0.02 + 0.0004*age + rng.normal(0,0.003)
+    decay = 0.02 + 0.0003*age
+    return G, noise, decay
+
+# ============================================================
+# BRAIN–ENERGY SIMULATION
+# ============================================================
+
+def simulate_brain_energy(L, G, noise, heart, decay, K_BODY, K_ENERGY, seed):
+    rng = np.random.default_rng(seed)
+    N = L.shape[0]
+    z = rng.normal(size=N) + 1j*rng.normal(size=N)
+    omega = rng.uniform(8,12,N)*2*np.pi/100
+    E = 1
+    power = np.zeros((STEPS,N))
+    energy = np.zeros(STEPS)
+    for t in range(STEPS):
+        brain_power = np.mean(np.abs(z)**2)
+        prod = 0.4 + 0.2*heart[t]
+        cons = 0.05*brain_power
+        dE = prod - cons - decay*E
+        E += dE*DT
+        E = max(E,0)
+        forcing = K_BODY*heart[t] + K_ENERGY*E
+        coupling = -G*(L@z)
+        intrinsic = (0.02 + 1j*omega - np.abs(z)**2)*z
+        noise_term = noise*np.sqrt(DT)*(rng.normal(size=N)+1j*rng.normal(size=N))
+        dz = intrinsic + coupling + forcing*z + noise_term
+        z += dz*DT
+        power[t] = np.abs(z)**2
+        energy[t] = E
+    return power, energy
+
+# ============================================================
+# METRICS
+# ============================================================
+
+def coherence(sig1, sig2):
+    phase1 = np.angle(sig1)
+    phase2 = np.angle(sig2)
+    return np.abs(np.mean(np.exp(1j*(phase1-phase2))))
+
+def predictive_metric(power):
+    diff = np.diff(np.mean(power,axis=1))
+    return np.sqrt(np.mean(diff**2))
+
+def energy_metrics(E):
+    return np.std(E), np.mean(E)
+
+def cognition_energy(E,G):
+    return 0.5*G + 0.5*np.mean(E) - 0.3*np.std(E)
+
+def cognition_independent(heart, rng):
+    return np.mean(heart) + rng.normal(0,0.1)
+
+def free_energy_metric(power):
+    pred = np.mean(power, axis=1)
+    return np.mean(np.diff(pred)**2)
+
+# ============================================================
+# BOOTSTRAP MEDIATION
+# ============================================================
+
+def bootstrap_mediation(X,M,Y,n_boot=1000,seed=42):
+    rng = np.random.default_rng(seed)
+    indirects = []
+    X = np.array(X)
+    M = np.array(M)
+    Y = np.array(Y)
+    n = len(X)
+    for _ in range(n_boot):
+        idx = rng.integers(0,n,n)
+        Xb,Mb,Yb = X[idx], M[idx], Y[idx]
+        a_model = LinearRegression().fit(Xb.reshape(-1,1),Mb)
+        a = a_model.coef_[0]
+        XY = np.column_stack([Xb,Mb])
+        b_model = LinearRegression().fit(XY,Yb)
+        b = b_model.coef_[1]
+        indirects.append(a*b)
+    indirects = np.array(indirects)
+    lower, upper = np.percentile(indirects,[2.5,97.5])
+    return {"indirect_mean": np.mean(indirects),
+            "ci_lower": lower,
+            "ci_upper": upper}
+
+# ============================================================
+# SUBJECT SIMULATION
+# ============================================================
+
+def simulate_subject(job):
+    W,L,net_id,seed,subj,K_BODY,K_ENERGY = job
+    rng = np.random.default_rng(seed*100000 + subj)
+
+    age = rng.uniform(20,80)
+    G, noise, decay = age_modulation(age, rng)
+    heart = simulate_body(seed+subj)
+    power, E = simulate_brain_energy(L,G,noise,heart,decay,K_BODY,K_ENERGY,seed+subj)
+    brain = np.mean(power, axis=1)
+
+    brain_body = coherence(brain, heart)
+    active_inf = free_energy_metric(power)
+    null_model = rng.normal()
+
+    stab, eff = energy_metrics(E)
+    cog_energy = cognition_energy(E,G)
+    cog_indep = cognition_independent(heart,rng)
+
+    return {
+        "NetworkID": net_id,
+        "Seed": seed,
+        "Age": age,
+        "BrainBody": brain_body,
+        "ActiveInference": active_inf,
+        "NullModel": null_model,
+        "EnergyEfficiency": eff,
+        "CogEnergy": cog_energy,
+        "CogIndependent": cog_indep
+    }
+
+# ============================================================
+# CREATE JOBS
+# ============================================================
+
+def create_jobs():
+    jobs = []
+    net_counter = 0
+    for N in NETWORK_SIZES:
+        for topo in ["smallworld","random","lattice"]:
+            for i in range(N_NETWORKS_PER_SIZE):
+                if topo=="smallworld": W = small_world(N, seed=i)
+                elif topo=="random": W = random_network(N, seed=i)
+                else: W = lattice_network(N)
+                W = normalize_connectivity(W)
+                L = graph_laplacian(W)
+                for Kb in K_BODY_VALS:
+                    for Ke in K_ENERGY_VALS:
+                        for seed in range(SEEDS_PER_NETWORK):
+                            for subj in range(N_SUBJECTS_PER_SEED):
+                                jobs.append((W,L,net_counter,seed,subj,Kb,Ke))
+                net_counter += 1
+    return jobs
+
+# ============================================================
+# MAIN
+# ============================================================
+
+if __name__=="__main__":
+    print("Creating jobs...")
+    jobs = create_jobs()
+    print(f"Total jobs created: {len(jobs)}")
+
+    results = Parallel(n_jobs=N_CORES, backend="loky", verbose=10)(
+        delayed(simulate_subject)(job) for job in jobs
+    )
+
+    df = pd.DataFrame(results)
+    df.to_csv(os.path.join(SAVE_DIR,"dataset_full.csv"), index=False)
+    print("Dataset saved.")
+
+    # -----------------------------
+    # Correlations
+    # -----------------------------
+    predictors = ["BrainBody","ActiveInference","NullModel"]
+    targets = ["CogEnergy","CogIndependent"]
+
+    corr_results = {}
+    for target in targets:
+        corr_results[target] = {}
+        for model in predictors:
+            x = df[model].values
+            y = df[target].values
+            # avoid constant array NaNs
+            if np.std(x)==0 or np.std(y)==0:
+                r = np.nan
+                p_perm = np.nan
+            else:
+                r,_ = pearsonr(x,y)
+                # permutation
+                perm_n = 1000
+                rng = np.random.default_rng(SEED_GLOBAL)
+                r_perm = []
+                for _ in range(perm_n):
+                    y_perm = rng.permutation(y)
+                    r_p,_ = pearsonr(x,y_perm)
+                    r_perm.append(r_p)
+                p_perm = np.mean(np.abs(r_perm)>=np.abs(r))
+            corr_results[target][model] = {"r": r, "p_perm": p_perm}
+            print(f"Correlation {model} -> {target}: r={r:.3f}, p_perm={p_perm:.3f}")
+
+    # Save correlation table
+    corr_table = pd.DataFrame({t:{m:corr_results[t][m]['r'] for m in predictors} for t in targets})
+    corr_table.to_csv(os.path.join(SAVE_DIR,"correlation_table.csv"))
+    print("Correlation table saved.")
+
+    # -----------------------------
+    # Mediation
+    # -----------------------------
+    med_results = {}
+    for target in targets:
+        med_results[target] = {}
+        for model in predictors:
+            med_results[target][model] = bootstrap_mediation(
+                X=df[model].values,
+                M=df["EnergyEfficiency"].values,
+                Y=df[target].values,
+                n_boot=1000,
+                seed=SEED_GLOBAL
+            )
+            print(f"Mediation {model} -> Energy -> {target}: {med_results[target][model]}")
+
+    # Save mediation table
+    med_table = pd.DataFrame({t:{m:str(med_results[t][m]) for m in predictors} for t in targets})
+    med_table.to_csv(os.path.join(SAVE_DIR,"mediation_table.csv"))
+    print("Mediation results saved.")
+
+    # -----------------------------
+    # Publication-ready figures
+    # -----------------------------
+    # Heatmap of correlations
+    plt.figure(figsize=(6,4))
+    sns.heatmap(corr_table, annot=True, cmap="coolwarm", center=0)
+    plt.title("Correlation: Models -> Cognition")
+    plt.tight_layout()
+    plt.savefig(os.path.join(FIG_DIR,"correlation_heatmap.png"))
+    plt.close()
+    print("Correlation heatmap saved.")
+
+    # Scatter plots
+    for target in targets:
+        for model in predictors:
+            plt.figure()
+            plt.scatter(df[model], df[target], alpha=0.3)
+            plt.xlabel(model)
+            plt.ylabel(target)
+            plt.title(f"{model} -> {target}")
+            plt.tight_layout()
+            plt.savefig(os.path.join(FIG_DIR,f"{model}_to_{target}.png"))
+            plt.close()
+    print("Scatter figures saved.")
