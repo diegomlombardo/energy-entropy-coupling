@@ -1,0 +1,115 @@
+# ============================================================
+# FULL MEDIATION ANALYSIS WITH DIRECT + INDIRECT PATHS
+# ============================================================
+
+import os
+import numpy as np
+import pandas as pd
+from sklearn.linear_model import LinearRegression
+
+# ============================================================
+# CONFIG
+# ============================================================
+
+SAVE_DIR = "BrainBodyEnergy_Publication"
+os.makedirs(SAVE_DIR, exist_ok=True)
+
+# ============================================================
+# LOAD DATA
+# ============================================================
+
+df = pd.read_csv(os.path.join(SAVE_DIR, "dataset_full.csv"))
+
+age_bins = np.arange(20, 85, 5)
+df['Age_bin'] = pd.cut(df['Age'], bins=age_bins)
+age_centers = [b.mid for b in df['Age_bin'].cat.categories]
+
+predictors = ['BrainBody', 'ActiveInference', 'NullModel']
+outcomes = ['CogEnergy', 'CogIndependent']
+
+# ============================================================
+# BOOTSTRAP MEDIATION FUNCTION
+# ============================================================
+
+def bootstrap_mediation(X, M, Y, n_boot=1000, seed=42):
+    """
+    Compute indirect (a*b) and direct (c') effects using bootstrap
+    X: predictor array
+    M: mediator array
+    Y: outcome array
+    Returns: dict with mean indirect, CI, and mean direct effect
+    """
+    rng = np.random.default_rng(seed)
+    indirects = []
+    directs = []
+
+    n = len(X)
+    X = np.array(X)
+    M = np.array(M)
+    Y = np.array(Y)
+
+    for _ in range(n_boot):
+        idx = rng.integers(0, n, n)
+        Xb, Mb, Yb = X[idx], M[idx], Y[idx]
+
+        # indirect path: a*b
+        a = np.corrcoef(Xb, Mb)[0,1]
+        b = np.corrcoef(Mb, Yb)[0,1]
+        indirects.append(a * b)
+
+        # direct path: c', regression of Y ~ X + M, coefficient of X
+        model = LinearRegression().fit(np.column_stack([Xb, Mb]), Yb)
+        directs.append(model.coef_[0])
+
+    indirects = np.array(indirects)
+    directs = np.array(directs)
+
+    return {
+        'indirect_mean': np.mean(indirects),
+        'indirect_ci_low': np.percentile(indirects, 2.5),
+        'indirect_ci_high': np.percentile(indirects, 97.5),
+        'direct_mean': np.mean(directs),
+        'direct_ci_low': np.percentile(directs, 2.5),
+        'direct_ci_high': np.percentile(directs, 97.5)
+    }
+
+# ============================================================
+# COMPUTE MEDIATION ACROSS AGE BINS
+# ============================================================
+
+med_rows = []
+
+for age_bin, group in df.groupby('Age_bin'):
+    age_mid = age_bin.mid
+    M = group['EnergyEfficiency'].values
+
+    for outcome in outcomes:
+        Y = group[outcome].values
+
+        for predictor in predictors:
+            X = group[predictor].values
+
+            # Bootstrap mediation
+            results = bootstrap_mediation(X, M, Y, n_boot=1000)
+
+            row = {
+                'Age': age_mid,
+                'Predictor': predictor,
+                'Outcome': outcome,
+                'Indirect_Mean': results['indirect_mean'],
+                'Indirect_CI_Low': results['indirect_ci_low'],
+                'Indirect_CI_High': results['indirect_ci_high'],
+                'Direct_Mean': results['direct_mean'],
+                'Direct_CI_Low': results['direct_ci_low'],
+                'Direct_CI_High': results['direct_ci_high']
+            }
+
+            med_rows.append(row)
+
+# ============================================================
+# SAVE TABLE
+# ============================================================
+
+med_table = pd.DataFrame(med_rows)
+med_table.to_csv(os.path.join(SAVE_DIR, "mediation_direct_indirect_table.csv"), index=False)
+print("✅ Mediation table with direct and indirect effects saved!")
