@@ -1,131 +1,170 @@
+import os
 import pandas as pd
 import numpy as np
-import seaborn as sns
 import matplotlib.pyplot as plt
-
-import statsmodels.api as sm
-from statsmodels.robust.robust_linear_model import RLM
+import seaborn as sns
 from scipy.stats import pearsonr
+from matplotlib.lines import Line2D
+
+# ============================================================
+# CONFIG
+# ============================================================
 
 SAVE_DIR = "BrainBodyEnergy_Publication"
+FIG_DIR = os.path.join(SAVE_DIR, "figures")
+os.makedirs(FIG_DIR, exist_ok=True)
 
-# -----------------------------
-# Load dataset
-# -----------------------------
-df = pd.read_csv(f"{SAVE_DIR}/dataset_full.csv")
+sns.set(style="white", context="paper")
 
-sns.set(style="whitegrid", context="talk")
+plt.rcParams.update({
+    "axes.linewidth": 1.2,
+    "axes.labelsize": 12,
+    "xtick.labelsize": 10,
+    "ytick.labelsize": 10,
+    "figure.figsize": (14,5)
+})
 
-# -----------------------------
-# Define predictors
-# -----------------------------
-predictors = ["BrainHeartCoherence", "ForwardModeling", "NullModel"]
-outcome = "SyntheticCognition"
-mediator = "EnergyEfficiency"
+predictors = ['BrainBody', 'ActiveInference', 'NullModel']
 
-# -----------------------------
-# FIGURE 1 — Predictors vs Cognition
-# -----------------------------
-fig, axs = plt.subplots(1,3,figsize=(18,5))
+scatter_colors = {
+    'CogEnergy': '#d95f5f',        # red
+    'CogIndependent': '#4daf4a'    # green
+}
 
-for i, var in enumerate(predictors):
-    sns.regplot(
-        data=df,
-        x=var,
-        y=outcome,
-        scatter_kws={'alpha':0.3},
-        line_kws={'color':'red'},
-        ax=axs[i]
+OFFSET = 3.5
+SCALE = 0.8
+
+# ============================================================
+# LOAD DATA
+# ============================================================
+
+df = pd.read_csv(os.path.join(SAVE_DIR, "dataset_full.csv"))
+
+# ============================================================
+# NORMALIZE
+# ============================================================
+
+df['CogEnergy_z'] = ((df['CogEnergy'] - df['CogEnergy'].mean()) / df['CogEnergy'].std()) * SCALE
+df['CogIndependent_z'] = ((df['CogIndependent'] - df['CogIndependent'].mean()) / df['CogIndependent'].std()) * SCALE
+
+# ============================================================
+# FIGURE
+# ============================================================
+
+fig, axes = plt.subplots(1, 3, sharey=True)
+
+for i, (ax, model) in enumerate(zip(axes, predictors)):
+
+    x = df[model].values
+    x_line = np.linspace(x.min(), x.max(), 100)
+
+    # -------------------------
+    # ENERGY (TOP)
+    # -------------------------
+    yE = df['CogEnergy_z'].values + OFFSET
+    ax.scatter(x, yE,
+               color=scatter_colors['CogEnergy'],
+               s=40, alpha=0.8,
+               edgecolor='black', linewidth=0.3)
+
+    mE, bE = np.polyfit(x, yE, 1)
+    ax.plot(x_line, mE*x_line + bE,
+            color='black', lw=2.3)  # regression line in black
+
+    rE, _ = pearsonr(x, df['CogEnergy_z'])
+
+    # R² in upper-left corner (almost touching Y-axis)
+    x_text = x.min() - (x.max()-x.min())*0.02
+    ax.text(
+        x_text,
+        yE.max(),
+        f"$R^2$ = {rE**2:.2f}",
+        fontsize=11,
+        fontweight='bold',
+        color='black',
+        ha='left',
+        va='bottom'
     )
-    axs[i].set_title(f"{var} → {outcome}")
 
-plt.tight_layout()
-plt.savefig(f"{SAVE_DIR}/Figure1_predictors_cognition.png", dpi=300)
-plt.close()
+    # -------------------------
+    # INDEPENDENT (BOTTOM)
+    # -------------------------
+    yI = df['CogIndependent_z'].values - OFFSET
+    ax.scatter(x, yI,
+               color=scatter_colors['CogIndependent'],
+               s=40, alpha=0.8,
+               edgecolor='black', linewidth=0.3)
 
-# -----------------------------
-# FIGURE 2 — Predictor → Energy
-# -----------------------------
-fig, axs = plt.subplots(1,3,figsize=(18,5))
+    mI, bI = np.polyfit(x, yI, 1)
+    ax.plot(x_line, mI*x_line + bI,
+            color='black', lw=2.3)  # regression line in black
 
-for i, var in enumerate(predictors):
-    sns.regplot(
-        data=df,
-        x=var,
-        y=mediator,
-        scatter_kws={'alpha':0.3},
-        line_kws={'color':'green'},
-        ax=axs[i]
+    rI, _ = pearsonr(x, df['CogIndependent_z'])
+
+    # R² in upper-left of lower cloud (slightly above top of lower cloud, almost left)
+    ax.text(
+        x_text,
+        yI.max(),
+        f"$R^2$ = {rI**2:.2f}",
+        fontsize=11,
+        fontweight='bold',
+        color='black',
+        ha='left',
+        va='bottom'
     )
-    axs[i].set_title(f"{var} → {mediator}")
 
+    # -------------------------
+    # STRUCTURE
+    # -------------------------
+    ax.axhspan(OFFSET-1.3, OFFSET+1.3, color='red', alpha=0.04)
+    ax.axhspan(-OFFSET-1.3, -OFFSET+1.3, color='green', alpha=0.04)
+    ax.axhline(0, color='black', linestyle='--', linewidth=1)
+
+    ax.set_title(model)
+    ax.text(-0.15, 1.05, chr(65+i),
+            transform=ax.transAxes,
+            fontsize=14, fontweight='bold')
+    ax.set_xlabel(model)
+
+# ============================================================
+# SHARED Y
+# ============================================================
+
+axes[0].set_ylabel("Cognition (z-scored, separated)")
+axes[0].set_yticks([OFFSET, -OFFSET])
+axes[0].set_yticklabels(["CogEnergy", "CogIndependent"])
+
+for ax in axes[1:]:
+    ax.set_yticklabels([])
+
+# ============================================================
+# GLOBAL LEGEND
+# ============================================================
+
+legend_elements = [
+    Line2D([0], [0], marker='o', color='w',
+           label='CogEnergy',
+           markerfacecolor=scatter_colors['CogEnergy'],
+           markeredgecolor='black', markersize=7),
+
+    Line2D([0], [0], marker='o', color='w',
+           label='CogIndependent',
+           markerfacecolor=scatter_colors['CogIndependent'],
+           markeredgecolor='black', markersize=7)
+]
+
+fig.legend(handles=legend_elements,
+           loc='upper center',
+           ncol=2,
+           frameon=False,
+           bbox_to_anchor=(0.5, 1.05))
+
+# ============================================================
+# FINAL
+# ============================================================
+
+sns.despine()
 plt.tight_layout()
-plt.savefig(f"{SAVE_DIR}/Figure2_predictors_energy.png", dpi=300)
-plt.close()
-
-# -----------------------------
-# Robust Regression Tables
-# -----------------------------
-robust_results = []
-
-for var in predictors:
-    X = sm.add_constant(df[[var]])
-    y = df[outcome]
-    rlm_model = sm.RLM(y, X, M=sm.robust.norms.HuberT()).fit()
-    robust_results.append({
-        "Predictor": var,
-        "coef": rlm_model.params[var],
-        "intercept": rlm_model.params["const"],
-        "p_value": rlm_model.pvalues[var]
-    })
-
-df_robust = pd.DataFrame(robust_results)
-df_robust.to_csv(f"{SAVE_DIR}/Table_robust_regression.csv", index=False)
-
-# -----------------------------
-# Mediation Analysis (Robust)
-# -----------------------------
-def robust_mediation(df, predictor, mediator, outcome):
-    # Path a: predictor → mediator
-    Xa = sm.add_constant(df[[predictor]])
-    ma = sm.RLM(df[mediator], Xa, M=sm.robust.norms.HuberT()).fit()
-
-    # Path b & c': predictor + mediator → outcome
-    Xb = sm.add_constant(df[[predictor, mediator]])
-    mb = sm.RLM(df[outcome], Xb, M=sm.robust.norms.HuberT()).fit()
-
-    a = ma.params[predictor]
-    b = mb.params[mediator]
-    c_prime = mb.params[predictor]
-    indirect = a * b
-
-    return {
-        "Predictor": predictor,
-        "Mediator": mediator,
-        "a_path": a,
-        "b_path": b,
-        "IndirectEffect": indirect,
-        "DirectEffect": c_prime
-    }
-
-med_results = []
-
-for var in predictors:
-    med_results.append(robust_mediation(df, var, mediator, outcome))
-
-df_med = pd.DataFrame(med_results)
-df_med.to_csv(f"{SAVE_DIR}/Table_robust_mediation.csv", index=False)
-
-# -----------------------------
-# Correlation Matrix (Robust Spearman)
-# -----------------------------
-metrics = predictors + [mediator, outcome]
-corr_matrix = df[metrics].corr(method='spearman')
-
-plt.figure(figsize=(8,6))
-sns.heatmap(corr_matrix, annot=True, cmap="coolwarm", center=0)
-plt.title("Spearman Correlation Matrix (Robust)")
-plt.savefig(f"{SAVE_DIR}/Figure3_spearman_corr.png", dpi=300)
-plt.close()
-
-print("Robust figures and mediation analysis completed.")
+plt.savefig(os.path.join(FIG_DIR, "Figure2_FINAL_R2_black_upperleft.png"),
+            dpi=600, bbox_inches='tight')
+plt.show()
