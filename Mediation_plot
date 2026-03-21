@@ -1,101 +1,70 @@
-import pandas as pd
-import numpy as np
-import os
 import matplotlib.pyplot as plt
-import networkx as nx
-from sklearn.linear_model import LinearRegression
+from matplotlib.patches import FancyArrowPatch, Circle
 
-# Paths
-SAVE_DIR = "/Users/diegolombardoisadie20252/Desktop/Marie Curie 2026/SATURDAY_07_25/BrainBodyEnergy_Publication"
-CSV_FILE = os.path.join(SAVE_DIR, "dataset_full.csv")
-FIG_DIR = os.path.join(SAVE_DIR, "Resutls_conf")
-os.makedirs(FIG_DIR, exist_ok=True)
-
-# Load data
-df = pd.read_csv(CSV_FILE)
-
-# Variables
-predictors = ["NullModel", "BrainHeartCoherence", "ForwardModeling"]
-mediator = "EnergyEfficiency"
-outcome = "SyntheticCognition"
-
-# Compute mediation paths function
-def compute_paths(X, M, Y):
-    X = np.array(X)
-    M = np.array(M)
-    Y = np.array(Y)
-
-    model_a = LinearRegression().fit(X.reshape(-1,1), M)
-    a = model_a.coef_[0]
-
-    XY = np.column_stack([X, M])
-    model_b = LinearRegression().fit(XY, Y)
-    c_prime = model_b.coef_[0]
-    b = model_b.coef_[1]
-
-    indirect = a * b
-    return a, b, c_prime, indirect
-
-# Compute for all predictors
-results = {}
-for pred in predictors:
-    X = df[pred].values
-    M = df[mediator].values
-    Y = df[outcome].values
-    results[pred] = compute_paths(X, M, Y)
-
-# Create directed graph
-G = nx.DiGraph()
-
-# Add nodes with sizes and colors
-node_sizes = 3000
-colors = {
-    "SyntheticCognition": "lightcoral",
-    "EnergyEfficiency": "lightgreen",
-}
-for pred in predictors:
-    colors[pred] = "skyblue"
-
-for node in predictors + [mediator, outcome]:
-    G.add_node(node)
-
-# Add edges for mediation paths
-for pred, (a,b,c_prime,indirect) in results.items():
-    # Predictor -> Mediator
-    G.add_edge(pred, mediator, label=f"a={a:.2f}")
-
-    # Mediator -> Outcome
-    G.add_edge(mediator, outcome, label=f"b={b:.2f}")
-
-    # Predictor -> Outcome (direct)
-    G.add_edge(pred, outcome, label=f"c'={c_prime:.2f}")
-
-# Position nodes manually for nice layout
-pos = {
-    "NullModel": (0,2),
-    "BrainHeartCoherence": (0,1),
-    "ForwardModeling": (0,0),
-    "EnergyEfficiency": (1,1),
-    "SyntheticCognition": (2,1),
+# Mediation results (rounded for clarity)
+results = {
+    'BrainBody': {'indirect': -26.14, 'indirect_low': -28.45, 'indirect_high': -23.79,
+                  'direct': 0.65, 'direct_low': 0.38, 'direct_high': 0.90},
+    'ActiveInference': {'indirect': 29946.89, 'indirect_low': 29638.50, 'indirect_high': 30300.60,
+                        'direct': 2351.95, 'direct_low': 2310.56, 'direct_high': 2392.83},
+    'NullModel': {'indirect': -0.02, 'indirect_low': -0.03, 'indirect_high': -0.02,
+                  'direct': 0.00075, 'direct_low': 0.00056, 'direct_high': 0.00095}
 }
 
-plt.figure(figsize=(10,6))
-nx.draw_networkx_nodes(G, pos, node_color=[colors[n] for n in G.nodes()], node_size=node_sizes)
-nx.draw_networkx_labels(G, pos, font_size=10, font_weight="bold")
+fig, ax = plt.subplots(figsize=(12, 6))
+ax.axis('off')
 
-# Draw edges and labels
-nx.draw_networkx_edges(G, pos, arrowsize=20, arrowstyle='-|>')
+# Positions for nodes
+x_pred = 0.15
+x_med = 0.55
+x_out = 0.85
+y_positions = [0.75, 0.5, 0.25]
 
-edge_labels = nx.get_edge_attributes(G, 'label')
-nx.draw_networkx_edge_labels(G, pos, edge_labels=edge_labels, font_color='black', font_size=9)
+circle_radius = 0.06
 
-plt.title("Mediation Model: Predictors → EnergyEfficiency → SyntheticCognition", fontsize=14)
-plt.axis('off')
+# Draw nodes as circles with labels
+for i, model in enumerate(['BrainBody', 'ActiveInference', 'NullModel']):
+    y = y_positions[i]
+    circle = Circle((x_pred, y), circle_radius, facecolor='#8da0cb', edgecolor='black', lw=1.5)
+    ax.add_patch(circle)
+    ax.text(x_pred, y, model, ha='center', va='center', fontsize=13, fontweight='bold', color='white')
+
+# Mediator node circle
+circle = Circle((x_med, 0.5), circle_radius*1.2, facecolor='#66c2a5', edgecolor='black', lw=1.5)
+ax.add_patch(circle)
+ax.text(x_med, 0.5, 'Energy\nEfficiency', ha='center', va='center', fontsize=13, fontweight='bold', color='white')
+
+# Outcome node circle
+circle = Circle((x_out, 0.5), circle_radius, facecolor='#fc8d62', edgecolor='black', lw=1.5)
+ax.add_patch(circle)
+ax.text(x_out, 0.5, 'Cog\nEnergy', ha='center', va='center', fontsize=13, fontweight='bold', color='white')
+
+# Arrow drawing helper
+def draw_arrow(x_start, y_start, x_end, y_end, label, color='black', lw=2, alpha=1.0):
+    arrow = FancyArrowPatch((x_start, y_start), (x_end, y_end),
+                            arrowstyle='-|>', mutation_scale=20,
+                            color=color, linewidth=lw, alpha=alpha)
+    ax.add_patch(arrow)
+    x_label = (x_start + x_end) / 2
+    y_label = (y_start + y_end) / 2
+    ax.text(x_label, y_label + 0.03, label, ha='center', va='bottom', fontsize=11, color=color, fontstyle='italic')
+
+# Draw arrows for indirect and direct effects
+for i, model in enumerate(['BrainBody', 'ActiveInference', 'NullModel']):
+    y = y_positions[i]
+    res = results[model]
+    
+    # Indirect path arrows: Predictor → Mediator → Outcome
+    draw_arrow(x_pred + circle_radius, y, x_med - circle_radius*1.2, 0.5, f"a*b = {res['indirect']:.2f}", color='#1f78b4')
+    draw_arrow(x_med + circle_radius*1.2, 0.5, x_out - circle_radius, 0.5, '', color='#1f78b4')
+    
+    # Direct path arrow: Predictor → Outcome (slightly lower, semi-transparent)
+    draw_arrow(x_pred + circle_radius, y - 0.04, x_out - circle_radius, 0.46, f"c' = {res['direct']:.2f}", color='#e31a1c', alpha=0.7)
+
+# Title
+ax.text(0.5, 0.92, 'Mediation Path Diagram: Models → EnergyEfficiency → CogEnergy',
+        ha='center', va='center', fontsize=18, fontweight='bold')
+
 plt.tight_layout()
-
-# Save figure
-filename = os.path.join(FIG_DIR, "mediation_network_diagram.png")
-plt.savefig(filename, dpi=300)
+plt.savefig("mediation_path_diagram_circles_pnas_style.png", dpi=300)
 plt.show()
-
-print(f"Mediation network diagram saved to {filename}")
