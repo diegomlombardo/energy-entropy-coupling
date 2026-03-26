@@ -1,7 +1,6 @@
 # ============================================================
 # Brain–Body–Energy Generative Model
-# Behaviorally-Inspired Global Cognition Simulation
-# Correlations of all models with cognition + Mediation
+# + Active Inference + Standardization + Model Comparison
 # ============================================================
 
 import numpy as np
@@ -10,8 +9,8 @@ import os
 import multiprocessing
 from joblib import Parallel, delayed
 from sklearn.linear_model import LinearRegression
+from sklearn.preprocessing import StandardScaler
 from scipy.stats import pearsonr
-import matplotlib.pyplot as plt
 
 # ============================================================
 # GLOBAL PARAMETERS
@@ -34,8 +33,8 @@ FIG_DIR = os.path.join(SAVE_DIR, "figures")
 os.makedirs(SAVE_DIR, exist_ok=True)
 os.makedirs(FIG_DIR, exist_ok=True)
 
-N_CORES = multiprocessing.cpu_count()
-print("Detected CPU cores:", N_CORES)
+N_CORES = 12
+print("Detected CPU cores:", multiprocessing.cpu_count())
 
 # ============================================================
 # NETWORK GENERATORS
@@ -46,8 +45,8 @@ def small_world(N, k=6, p=0.2, seed=None):
     W = np.zeros((N, N))
     for i in range(N):
         for j in range(1, k//2+1):
-            W[i, (i+j)%N] = 1
-            W[i, (i-j)%N] = 1
+            W[i,(i+j)%N] = 1
+            W[i,(i-j)%N] = 1
     for i in range(N):
         for j in range(N):
             if W[i,j] == 1 and rng.random() < p:
@@ -57,7 +56,7 @@ def small_world(N, k=6, p=0.2, seed=None):
                     new = rng.integers(N)
                 W[i,new] = 1
     W = (W + W.T)/2
-    np.fill_diagonal(W, 0)
+    np.fill_diagonal(W,0)
     return W
 
 def random_network(N, seed=None):
@@ -84,21 +83,20 @@ def graph_laplacian(W):
     return np.diag(W.sum(axis=1)) - W
 
 # ============================================================
-# BODY OSCILLATORS
+# BODY
 # ============================================================
 
 def simulate_body(seed):
     rng = np.random.default_rng(seed)
     heart_phase = 0
     heart = []
-    heart_freq = 1.2
     for _ in range(STEPS):
-        heart_phase += 2*np.pi*heart_freq*DT + rng.normal(0,0.01)
+        heart_phase += 2*np.pi*1.2*DT + rng.normal(0,0.01)
         heart.append(np.sin(heart_phase))
     return np.array(heart)
 
 # ============================================================
-# AGE MODULATION
+# AGE
 # ============================================================
 
 def age_modulation(age, rng):
@@ -108,7 +106,7 @@ def age_modulation(age, rng):
     return G, noise, decay
 
 # ============================================================
-# BRAIN–ENERGY SIMULATION
+# BRAIN–ENERGY
 # ============================================================
 
 def simulate_brain_energy(L, G, noise, heart, decay, K_BODY, K_ENERGY, seed):
@@ -117,211 +115,162 @@ def simulate_brain_energy(L, G, noise, heart, decay, K_BODY, K_ENERGY, seed):
     z = rng.normal(size=N) + 1j*rng.normal(size=N)
     omega = rng.uniform(8,12,N)*2*np.pi/100
     E = 1
-    z_traj = np.zeros((STEPS,N), dtype=complex)
     power = np.zeros((STEPS,N))
     energy = np.zeros(STEPS)
+
     for t in range(STEPS):
         brain_power = np.mean(np.abs(z)**2)
-        prod = 0.4 + 0.2*heart[t]
-        cons = 0.05*brain_power
-        dE = prod - cons - decay*E
-        E += dE*DT
-        E = max(E,0)
+        dE = (0.4 + 0.2*heart[t]) - 0.05*brain_power - decay*E
+        E = max(E + dE*DT, 0)
+
         forcing = K_BODY*heart[t] + K_ENERGY*E
-        coupling = -G*(L@z)
-        intrinsic = (0.02 + 1j*omega - np.abs(z)**2)*z
-        noise_term = noise*np.sqrt(DT)*(rng.normal(size=N)+1j*rng.normal(size=N))
-        dz = intrinsic + coupling + forcing*z + noise_term
-        z = z + dz*DT
-        z_traj[t] = z
+        dz = (0.02 + 1j*omega - np.abs(z)**2)*z - G*(L@z) + forcing*z \
+             + noise*np.sqrt(DT)*(rng.normal(size=N)+1j*rng.normal(size=N))
+
+        z += dz*DT
         power[t] = np.abs(z)**2
         energy[t] = E
-    return z_traj, power, energy
+
+    return power, energy
 
 # ============================================================
 # METRICS
 # ============================================================
 
-def metastability(z):
-    phase = np.angle(z)
-    R = np.abs(np.mean(np.exp(1j*phase),axis=1))
-    return np.std(R)
-
 def coherence(sig1, sig2):
-    p1 = np.angle(sig1)
-    p2 = np.angle(sig2)
-    return np.abs(np.mean(np.exp(1j*(p1-p2))))
+    return np.abs(np.mean(np.exp(1j*(np.angle(sig1)-np.angle(sig2)))))
 
 def predictive_metric(power):
-    diff = np.diff(np.mean(power,axis=1))
-    return np.sqrt(np.mean(diff**2))
-
-def energy_metrics(E):
-    return np.std(E), np.mean(E)
-
-# ============================================================
-# BEHAVIORALLY-INSPIRED COGNITION
-# ============================================================
-
-def global_cognition_behavior(E, G):
-    mean_E = np.mean(E)
-    std_E = np.std(E)
-    return 0.5*G + 0.5*mean_E - 0.3*std_E
+    signal = np.mean(power, axis=1)
+    pred = np.roll(signal,1)
+    pred[0] = signal[0]
+    pe = signal - pred
+    precision = 1/(np.var(signal)+1e-8)
+    return precision * np.mean(pe**2)
 
 # ============================================================
-# SUBJECT SIMULATION
+# SUBJECT
 # ============================================================
 
 def simulate_subject(job):
     W,L,net_id,seed,subj,K_BODY,K_ENERGY = job
-    rng = np.random.default_rng(seed*100000 + subj)
+    rng = np.random.default_rng(seed*100000+subj)
+
     age = rng.uniform(20,80)
     G, noise, decay = age_modulation(age, rng)
+
     heart = simulate_body(seed+subj)
-    z, power, E = simulate_brain_energy(L, G, noise, heart, decay, K_BODY, K_ENERGY, seed+subj)
+    power, E = simulate_brain_energy(L,G,noise,heart,decay,K_BODY,K_ENERGY,seed+subj)
+
     brain = np.mean(power, axis=1)
-    m = metastability(z)
-    coh = coherence(brain, heart)
-    fm = predictive_metric(power)
-    stab, eff = energy_metrics(E)
-    cog = global_cognition_behavior(E, G)
+
     return {
-        "NetworkID": net_id,
-        "Seed": seed,
-        "Age": age,
-        "K_BODY": K_BODY,
-        "K_ENERGY": K_ENERGY,
-        "Metastability": m,
-        "BrainHeartCoherence": coh,
-        "ForwardModeling": fm,
-        "EnergyStability": stab,
-        "EnergyEfficiency": eff,
-        "GlobalCognition": cog
+        "BrainHeartCoherence": coherence(brain, heart),
+        "ForwardModeling": predictive_metric(power),
+        "EnergyEfficiency": np.mean(E),
+        "GlobalCognition": 0.5*G + 0.5*np.mean(E) - 0.3*np.std(E)
     }
 
 # ============================================================
-# JOB CREATION
+# JOBS
 # ============================================================
 
-def create_jobs(K_BODY_vals=[0.03,0.05,0.07], K_ENERGY_vals=[0.03,0.05,0.07]):
-    jobs = []
-    net_counter = 0
+def create_jobs():
+    jobs=[]
+    net_counter=0
     for N in NETWORK_SIZES:
         for topo in ["smallworld","random","lattice"]:
             for i in range(N_NETWORKS_PER_SIZE):
-                if topo=="smallworld": W = small_world(N, seed=i)
-                if topo=="random": W = random_network(N, seed=i)
-                if topo=="lattice": W = lattice_network(N)
-                W = normalize_connectivity(W)
-                L = graph_laplacian(W)
-                for Kb in K_BODY_vals:
-                    for Ke in K_ENERGY_vals:
+                if topo=="smallworld": W=small_world(N,seed=i)
+                if topo=="random": W=random_network(N,seed=i)
+                if topo=="lattice": W=lattice_network(N)
+                W=normalize_connectivity(W)
+                L=graph_laplacian(W)
+
+                for Kb in [0.03,0.05,0.07]:
+                    for Ke in [0.03,0.05,0.07]:
                         for seed in range(SEEDS_PER_NETWORK):
                             for subj in range(N_SUBJECTS_PER_SEED):
                                 jobs.append((W,L,net_counter,seed,subj,Kb,Ke))
-                net_counter += 1
+                net_counter+=1
     return jobs
 
 # ============================================================
-# MEDIATION FUNCTION
+# BOOTSTRAP MEDIATION
 # ============================================================
 
-def bootstrap_mediation(X, M, Y, n_boot=1000, seed=42):
-    rng = np.random.default_rng(seed)
-    indirect_effects = []
-    X = np.array(X)
-    M = np.array(M)
-    Y = np.array(Y)
-    n = len(X)
+def bootstrap_mediation(X,M,Y,n_boot=1000, seed=42):
+    rng=np.random.default_rng(seed)
+    effects=[]
+    n=len(X)
     for _ in range(n_boot):
-        idx = rng.integers(0, n, n)
-        Xb, Mb, Yb = X[idx], M[idx], Y[idx]
-        a_model = LinearRegression().fit(Xb.reshape(-1,1), Mb)
-        a = a_model.coef_[0]
-        XY = np.column_stack([Xb, Mb])
-        b_model = LinearRegression().fit(XY, Yb)
-        b = b_model.coef_[1]
-        indirect_effects.append(a*b)
-    indirect_effects = np.array(indirect_effects)
-    lower, upper = np.percentile(indirect_effects, [2.5,97.5])
-    return {"indirect_mean": np.mean(indirect_effects), "ci_lower": lower, "ci_upper": upper}
+        idx=rng.integers(0,n,n)
+        Xb,Mb,Yb=X[idx],M[idx],Y[idx]
+        a=LinearRegression().fit(Xb.reshape(-1,1),Mb).coef_[0]
+        b=LinearRegression().fit(np.column_stack([Xb,Mb]),Yb).coef_[1]
+        effects.append(a*b)
+    effects = np.array(effects)
+    mean_effect = np.mean(effects)
+    ci_low, ci_high = np.percentile(effects,[2.5,97.5])
+    # Significant if CI does not include zero
+    significant = ci_low*ci_high > 0
+    return mean_effect, ci_low, ci_high, significant
 
 # ============================================================
-# MAIN SIMULATION
+# MAIN
 # ============================================================
 
 if __name__=="__main__":
 
-    jobs = create_jobs()
-    print("Total jobs:", len(jobs))
-
-    results = Parallel(n_jobs=N_CORES, backend="loky", verbose=10)(
-        delayed(simulate_subject)(job) for job in jobs
+    jobs=create_jobs()
+    results=Parallel(n_jobs=N_CORES, batch_size=50)(
+        delayed(simulate_subject)(j) for j in jobs
     )
 
-    df = pd.DataFrame(results)
-    df.to_csv(os.path.join(SAVE_DIR,"dataset_full.csv"), index=False)
-    print("Dataset saved")
+    df=pd.DataFrame(results)
 
-    # ============================================================
-    # Correlations: All models vs Cognition
-    # ============================================================
+    # ========================================================
+    # STANDARDIZATION OF ALL VARIABLES
+    # ========================================================
+    scaler = StandardScaler()
+    for col in ["BrainHeartCoherence","ForwardModeling","EnergyEfficiency","GlobalCognition"]:
+        df[col] = scaler.fit_transform(df[[col]])
 
-    predictors = ["Metastability", "BrainHeartCoherence", "ForwardModeling"]
-    corr_results = {}
-    plt.figure(figsize=(8,6), dpi=300)
-    for pred in predictors:
-        r, p = pearsonr(df[pred], df["GlobalCognition"])
-        corr_results[pred] = {"r": r, "p": p}
-        plt.scatter(df[pred], df["GlobalCognition"], alpha=0.4, label=f"{pred} r={r:.2f}")
-    plt.xlabel("Model Predictor")
-    plt.ylabel("Global Cognition")
-    plt.title("All Models vs Cognition")
-    plt.legend()
-    plt.tight_layout()
-    plt.savefig(os.path.join(FIG_DIR,"all_models_vs_cognition.png"))
-    plt.close()
-    pd.DataFrame(corr_results).T.to_csv(os.path.join(SAVE_DIR,"correlations_all_models.csv"))
-    print("Correlations of all models vs cognition saved")
+    # ========================================================
+    # NULL MODEL
+    # ========================================================
+    rng=np.random.default_rng(SEED_GLOBAL)
+    df["NullModel"]=rng.normal(size=len(df))
 
-    # ============================================================
-    # Mediation: BrainHeartCoherence → EnergyEfficiency → GlobalCognition
-    # ============================================================
+    # ========================================================
+    # MODEL COMPARISON
+    # ========================================================
+    models={
+        "BrainBody":"BrainHeartCoherence",
+        "ActiveInference":"ForwardModeling",
+        "Null":"NullModel"
+    }
 
-    mediation_results = bootstrap_mediation(
-        X=df["BrainHeartCoherence"].values,
-        M=df["EnergyEfficiency"].values,
-        Y=df["GlobalCognition"].values,
-        n_boot=1000,
-        seed=SEED_GLOBAL
-    )
-    pd.DataFrame([mediation_results]).to_csv(os.path.join(SAVE_DIR,"mediation_results.csv"))
-    print("Bootstrap mediation saved")
+    rows=[]
+    for name,col in models.items():
+        r,p=pearsonr(df[col],df["GlobalCognition"])
+        ind,ci_low,ci_high,sig=bootstrap_mediation(
+            df[col].values,
+            df["EnergyEfficiency"].values,
+            df["GlobalCognition"].values
+        )
+        rows.append({
+            "Model":name,
+            "r":r,
+            "p":p,
+            "Indirect_Effect":ind,
+            "CI_low":ci_low,
+            "CI_high":ci_high,
+            "Significant_Mediation": sig
+        })
 
-    # ============================================================
-    # Parameter sensitivity visualization
-    # ============================================================
+    summary=pd.DataFrame(rows)
+    summary.to_csv(os.path.join(SAVE_DIR,"model_comparison_standardized_significant.csv"),index=False)
 
-    for Kb in sorted(df["K_BODY"].unique()):
-        for Ke in sorted(df["K_ENERGY"].unique()):
-            subset = df[(df["K_BODY"]==Kb) & (df["K_ENERGY"]==Ke)]
-            plt.scatter(subset["BrainHeartCoherence"], subset["GlobalCognition"], alpha=0.3,
-                        label=f"K_BODY={Kb},K_ENERGY={Ke}")
-    plt.xlabel("BrainHeartCoherence")
-    plt.ylabel("Global Cognition")
-    plt.title("Parameter Sensitivity: K_BODY & K_ENERGY")
-    plt.legend()
-    plt.tight_layout()
-    plt.savefig(os.path.join(FIG_DIR,"parameter_sensitivity.png"))
-    plt.close()
-    print("Parameter sensitivity figure saved")
-
-    # ============================================================
-    # Summary metrics
-    # ============================================================
-
-    summary_metrics = df[["Metastability","BrainHeartCoherence","ForwardModeling",
-                          "EnergyStability","EnergyEfficiency","GlobalCognition"]].agg(['mean','std']).T
-    summary_metrics['Mean±SD'] = summary_metrics['mean'].round(3).astype(str) + " ± " + summary_metrics['std'].round(3).astype(str)
-    summary_metrics.to_csv(os.path.join(SAVE_DIR,"summary_metrics.csv"))
-    print("Summary metrics table saved")
+    print("\n=== MODEL COMPARISON (STANDARDIZED, SIGNIFICANT MEDIATION) ===")
+    print(summary)
