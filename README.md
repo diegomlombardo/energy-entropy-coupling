@@ -14,7 +14,7 @@ B) Cognitive performance depends on the alignment between neural metastability a
 
 No opposed to active inference, just complementary even do from the ontogenetic point of view is different.
 
-By simulating synthetic cohorts across a wide age range, we can explore how coupling strength influences cognition, revealing patterns like the inverted-U trajectory, where optimal cognition emerges at intermediate coupling and declines at extremes.
+By simulating synthetic cohorts across a wide age range, I explore how coupling strength influences first energy and then cognition, revealing patterns like the inverted-U trajectory, where optimal cognition emerges at intermediate coupling and declines at extremes.
 
 In short, this framework allows researchers to test mechanistic hypotheses about energy, brain dynamics, and cognition, without relying on real-world pathology data.
 
@@ -118,6 +118,5 @@ Modular design allows easy extensions to new network topologies, coupling parame
 Brain–Body–Energy Generative Model
 
 
-References
 
 Lombardo, Diego, Energy Coupling in Brain-Body Systems: An In-Silico Approach to Lifespan Cognitive and Computational Vulnerability (March 08, 2026). Available at SSRN: https://ssrn.com/abstract=6391438 or http://dx.doi.org/10.2139/ssrn.6391438
