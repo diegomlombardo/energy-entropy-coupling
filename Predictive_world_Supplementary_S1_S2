@@ -1,8 +1,10 @@
 # ============================================================
 # Brain–Body–Energy Generative Model
 # + Active Inference + Standardization + Model Comparison 
-# Lets avoid completly circularity : even having the crazy idea that 
-# cogition does not depend of brain metabolism like in the main paper
+# Here, cognition is represented as a simple function, the G factor. 
+# To avoid any circular reasoning, we explicitly do not assume—even as a 
+# hypothetical—that cognition is independent of brain metabolism, as I
+# suggested in the main paper.
 # Here the model rungs with cogition dependent ONLY of a G factor
 # ============================================================
 
