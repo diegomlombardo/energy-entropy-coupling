@@ -1,8 +1,10 @@
 Brain–Body–Energy Generative Model
 
-This repository contains a fully parallelized in-silico simulation framework designed to explore how brain–body–energy interactions shape cognition across lifespan-like cohorts. The model is inspired by systems-level theories suggesting that cognitive outcomes emerge not only from pathology, but from how metabolic stability and neural dynamics interact across scales. Here the pre-pint: http://dx.doi.org/10.2139/ssrn.6391438
+This repository contains a fully parallelized in-silico simulation framework designed to explore how brain–body–energy interactions shape cognition across lifespan-like cohorts. The model is inspired by systems-level theories suggesting that cognitive outcomes emerge not only from pathology, but from how metabolic stability and neural dynamics interact across scales.
 
-Scientific Motivation
+This line of research is still preliminary and exploratory, as there is currently no empirical evidence supporting this theory; rather, it serves as a proof of concept.
+ 
+ Scientific Motivation
 
 Traditional approaches to cognitive vulnerability often focus on molecular or pathological causes. Here, we take a different/complemetary perspective:
 
