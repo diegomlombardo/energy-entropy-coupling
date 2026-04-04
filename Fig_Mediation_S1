@@ -1,0 +1,146 @@
+# ============================================================
+# MEDIATION FIGURE (FINAL - REAL RESULTS)
+# File: model_comparison_standardized_significant.csv
+# ============================================================
+
+import pandas as pd
+from graphviz import Digraph
+
+# ============================================================
+# LOAD DATA
+# ============================================================
+
+df = pd.read_csv("model_comparison_standardized_significant.csv")
+
+# ============================================================
+# LABELS
+# ============================================================
+
+label_map = {
+    "BrainBody": "Brain–Body\nCoherence",
+    "ActiveInference": "Active\nInference",
+    "Null": "Null\nModel"
+}
+
+# ============================================================
+# CREATE GRAPH
+# ============================================================
+
+dot = Digraph(format='pdf')
+dot.attr(rankdir='LR', size='8,5')
+
+# ============================================================
+# STYLE
+# ============================================================
+
+dot.attr('node',
+         fontname='Helvetica',
+         fontsize='11',
+         style='filled',
+         color='black',
+         fillcolor='white')
+
+dot.attr('edge',
+         fontname='Helvetica',
+         fontsize='10')
+
+# ============================================================
+# NODES
+# ============================================================
+
+for model in df['Model']:
+
+    label = label_map.get(model, model)
+
+    if model == "BrainBody":
+        dot.node(model, label, shape='circle', penwidth='2.5')
+
+    elif model == "Null":
+        dot.node(model, label,
+                 shape='circle',
+                 color='gray',
+                 fontcolor='gray')
+
+    else:
+        dot.node(model, label, shape='circle')
+
+# Mediator
+dot.node('EnergyEfficiency',
+         'Energy\nEfficiency',
+         shape='ellipse',
+         fillcolor='#E8E8E8')
+
+# Outcome (UPDATED AS REQUESTED)
+dot.node('Cognition',
+         'G-based\nSimulated Cognition',
+         shape='ellipse',
+         fillcolor='#F2F2F2')
+
+# ============================================================
+# EDGES
+# ============================================================
+
+for _, row in df.iterrows():
+
+    model = row['Model']
+
+    # Indirect effect (mediation)
+    ind_label = f"{row['Indirect_Effect']:.2f} ({row['CI_low']:.2f}–{row['CI_high']:.2f})"
+
+    # Direct association (correlation)
+    dir_label = f"r = {row['r']:.2f}"
+
+    # Style
+    color = 'black'
+    penwidth = '1.5'
+
+    # Highlight main model
+    if model == "BrainBody":
+        penwidth = '2.5'
+
+    # Fade null model
+    if model == "Null":
+        color = 'gray'
+        penwidth = '1'
+
+    # Highlight significant mediation
+    if row["Significant_Mediation"]:
+        penwidth = '3'
+
+    # X → M
+    dot.edge(model,
+             'EnergyEfficiency',
+             label=ind_label,
+             color=color,
+             penwidth=penwidth)
+
+    # X → Y (correlation-based)
+    dot.edge(model,
+             'Cognition',
+             label=dir_label,
+             style='dashed',
+             color=color,
+             penwidth=penwidth)
+
+# ============================================================
+# M → Y
+# ============================================================
+
+dot.edge('EnergyEfficiency',
+         'Cognition',
+         label='Energy → Cognition',
+         penwidth='2')
+
+# ============================================================
+# TITLE
+# ============================================================
+
+dot.attr(label='Energy efficiency mediates the relationship between brain–body dynamics and G-based simulated cognition',
+         labelloc='t',
+         fontsize='14')
+
+# ============================================================
+# EXPORT
+# ============================================================
+
+dot.render('mediation_model_comparison_elife', view=True)
