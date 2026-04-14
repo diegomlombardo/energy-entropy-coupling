@@ -121,4 +121,4 @@ Modular design allows easy extensions to new network topologies, coupling parame
 
 References
 Diego M Lombardo. Cross-Scale Energy Coordination in Brain-Body Systems Supports Cognitive Function Across the Lifespan. 2026. ⟨hal-05565991v2⟩
-
+https://hal.science/hal-05565991
