@@ -121,6 +121,10 @@ Then run the simulation all the code run parallel processing and search for comp
 First the code that runs the main simulation: 
 "Main_Resuts_Code_all_models"
 
+Then the one that uses a cognitive proxy based in G factor: " Active_Inference_Confirmation_Mediations_FigS1andS2"
+
+ and last 
+
 
 Notes
 
