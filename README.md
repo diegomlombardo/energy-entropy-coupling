@@ -111,6 +111,17 @@ matplotlib
 
 seaborn
 
+How to use: 
+
+Before run the simulation generate a python enviroment: 
+source ~/bbrain_venv/bin/activate
+
+Then run the simulation all the code run parallel processing and search for computer cores automatically. 
+
+First the code that runs the main simulation: 
+"Main_Resuts_Code_all_models"
+
+
 Notes
 
 Fully in-silico — no human or animal data is required.
