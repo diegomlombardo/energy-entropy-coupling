@@ -123,7 +123,7 @@ First the code that runs the main simulation:
 
 Then the one that uses a cognitive proxy based in G factor: " Active_Inference_Confirmation_Mediations_FigS1andS2"
 
- and last 
+ and last the one that use a dynamic and energy independent cognitive proxy with robustness checks: perturbation and ablation " Robust_Model_Perturbation" 
 
 
 Notes
