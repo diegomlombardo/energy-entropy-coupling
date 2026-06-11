@@ -1,48 +1,50 @@
 # ============================================================
 # Brain–Body–Energy Generative Model
-# Fully Parallel Version (NON-CIRCULAR COGNITION FIXED)
+# CLEAN LAYERED + NON-CIRCULAR + ROBUST STATISTICS
 # ============================================================
 
+import os
 import numpy as np
 import pandas as pd
-import os
+import matplotlib.pyplot as plt
+import seaborn as sns
 
-from scipy.signal import hilbert
 from joblib import Parallel, delayed
+from sklearn.linear_model import LinearRegression
+from scipy.stats import pearsonr
 import multiprocessing
 
 # ============================================================
-# GLOBAL PARAMETERS
+# GLOBAL PARAMETERS (EXPANDED SCOPE = CLUSTER-READY)
 # ============================================================
 
-SEED_GLOBAL = 42
-rng_global = np.random.default_rng(SEED_GLOBAL)
-
 NETWORK_SIZES = [40, 80, 120]
-N_NETWORKS_PER_SIZE = 5
-SEEDS_PER_NETWORK = 50
-N_SUBJECTS_PER_SEED = 200
+N_NETWORKS_PER_SIZE = 3
+SEEDS_PER_NETWORK = 10
+N_SUBJECTS_PER_SEED = 50
 
-T = 500
+# PARAMETER SWEEP (EXPONENTIAL COMPLEXITY CONTROLLED)
+G_VALS = np.linspace(0.2, 1.0, 5)
+K_BODY_VALS = np.linspace(0.02, 0.08, 5)
+K_ENERGY_VALS = np.linspace(0.02, 0.08, 5)
+NOISE_VALS = np.linspace(0.01, 0.05, 5)
+
+T = 300
 DT = 0.05
 STEPS = int(T / DT)
 
-K_BODY = 0.05
-K_ENERGY = 0.05
-
-SAVE_DIR = "BrainBodyEnergy_Publication"
+SAVE_DIR = "BrainBodyEnergy_Publishable"
 os.makedirs(SAVE_DIR, exist_ok=True)
 
 N_CORES = multiprocessing.cpu_count()
-
-print("Detected CPU cores:", N_CORES)
+SEED_GLOBAL = 42
+rng_global = np.random.default_rng(SEED_GLOBAL)
 
 # ============================================================
-# NETWORK GENERATION
+# NETWORK LAYER
 # ============================================================
 
 def small_world(N, k=6, p=0.2, seed=None):
-
     rng = np.random.default_rng(seed)
     W = np.zeros((N, N))
 
@@ -62,57 +64,43 @@ def small_world(N, k=6, p=0.2, seed=None):
 
     W = (W + W.T) / 2
     np.fill_diagonal(W, 0)
-
     return W
 
 
 def graph_laplacian(W):
     return np.diag(W.sum(axis=1)) - W
 
+
 # ============================================================
-# BODY OSCILLATORS
+# BODY LAYER (INDEPENDENT GENERATOR)
 # ============================================================
 
 def simulate_body(seed):
-
     rng = np.random.default_rng(seed)
-
-    heart_phase = 0
-    resp_phase = 0
-
+    phase = 0
     heart = []
-    resp = []
-
-    heart_freq = 1.2
-    resp_freq = 0.25
 
     for _ in range(STEPS):
+        phase += 2*np.pi*1.2*DT + rng.normal(0, 0.01)
+        heart.append(np.sin(phase))
 
-        heart_phase += 2*np.pi*heart_freq*DT + rng.normal(0,0.01)
-        resp_phase += 2*np.pi*resp_freq*DT + rng.normal(0,0.01)
+    return np.array(heart)
 
-        heart.append(np.sin(heart_phase))
-        resp.append(np.sin(resp_phase))
-
-    return np.array(heart), np.array(resp)
 
 # ============================================================
-# BRAIN–ENERGY SIMULATION
+# ENERGY–BRAIN DYNAMICS (NON-CIRCULAR)
 # ============================================================
 
-def simulate_brain_energy(L, G, noise, heart, resp, seed):
-
+def simulate_brain_energy(L, G, noise, heart, K_BODY, K_ENERGY, seed):
     rng = np.random.default_rng(seed)
 
     N = L.shape[0]
+    z = rng.normal(size=N) + 1j*rng.normal(size=N)
+    omega = rng.uniform(8, 12, N) * 2*np.pi / 100
 
-    z = rng.normal(size=N) + 1j * rng.normal(size=N)
-    omega = rng.uniform(8, 12, N) * 2*np.pi/100
-
-    E = 1
+    E = 1.0
     decay = 0.02
 
-    z_traj = np.zeros((STEPS, N), dtype=complex)
     power = np.zeros((STEPS, N))
     energy = np.zeros(STEPS)
 
@@ -120,82 +108,88 @@ def simulate_brain_energy(L, G, noise, heart, resp, seed):
 
         brain_power = np.mean(np.abs(z)**2)
 
-        prod = 0.4 + 0.2*heart[t] + 0.1*resp[t]
+        prod = 0.4 + 0.2 * heart[t]
         cons = 0.05 * brain_power
 
-        dE = prod - cons - decay*E
-        E = max(E + dE*DT, 0)
+        dE = prod - cons - decay * E
+        E = max(E + dE * DT, 0)
 
-        forcing = (K_BODY*heart[t] + K_ENERGY*E)
+        forcing = K_BODY * heart[t] + K_ENERGY * E
 
         coupling = -G * (L @ z)
         intrinsic = (0.02 + 1j*omega - np.abs(z)**2) * z
-        noise_term = noise*np.sqrt(DT)*(rng.normal(size=N)+1j*rng.normal(size=N))
 
-        dz = intrinsic + coupling + forcing*z + noise_term
+        noise_term = noise * np.sqrt(DT) * (
+            rng.normal(size=N) + 1j*rng.normal(size=N)
+        )
 
-        z = z + dz*DT
+        z += (intrinsic + coupling + forcing*z + noise_term) * DT
 
-        z_traj[t] = z
         power[t] = np.abs(z)**2
         energy[t] = E
 
-    return z_traj, power, energy
+    return power, energy
+
 
 # ============================================================
 # METRICS
 # ============================================================
 
-def metastability(z_traj):
-
-    phase = np.angle(z_traj)
-    R = np.abs(np.mean(np.exp(1j*phase), axis=1))
-    return np.std(R)
-
-
 def coherence(sig1, sig2):
-
-    phase1 = np.angle(hilbert(sig1))
-    phase2 = np.angle(hilbert(sig2))
-
+    phase1 = np.angle(sig1)
+    phase2 = np.angle(sig2)
     return np.abs(np.mean(np.exp(1j*(phase1-phase2))))
 
 
-def predictive_metric(power):
-
-    diff = np.diff(np.mean(power, axis=1))
-    return np.sqrt(np.mean(diff**2))
-
-
-def energy_metrics(E):
-
+def energy_stats(E):
     return np.std(E), np.mean(E)
 
+
+def cognition_proxy(heart, noise):
+    # fully independent latent process (NO leakage)
+    return np.mean(heart) + noise * np.random.randn()
+
+
 # ============================================================
-# COGNITION (NON-CIRCULAR FIX)
+# EFFECT SIZES
 # ============================================================
 
-def generate_synthetic_cognition(z_traj, heart, resp, seed):
+def cohens_d(x, y):
+    nx, ny = len(x), len(y)
+    pooled = np.sqrt((np.var(x) + np.var(y)) / 2)
+    return (np.mean(x) - np.mean(y)) / (pooled + 1e-8)
 
-    rng = np.random.default_rng(seed)
 
-    # delayed brain-body interaction (prevents circularity)
-    lag = 5
+def partial_eta_squared(ss_effect, ss_total):
+    return ss_effect / (ss_total + 1e-8)
 
-    brain_signal = np.mean(np.abs(z_traj), axis=1)
 
-    brain_lag = brain_signal[:-lag]
-    heart_lag = heart[:-lag]
+# ============================================================
+# BOOTSTRAP MEDIATION
+# ============================================================
 
-    interaction = np.tanh(brain_lag) * np.sin(heart_lag)
+def bootstrap_mediation(X, M, Y, n_boot=500):
+    rng = np.random.default_rng(0)
+    indirects = []
 
-    cognition = (
-        0.6 * np.std(interaction)
-        + 0.3 * np.std(np.diff(brain_signal))
-        + rng.normal(0, 0.05)
-    )
+    X, M, Y = np.array(X), np.array(M), np.array(Y)
 
-    return cognition
+    for _ in range(n_boot):
+        idx = rng.integers(0, len(X), len(X))
+
+        Xb, Mb, Yb = X[idx], M[idx], Y[idx]
+
+        a = LinearRegression().fit(Xb.reshape(-1,1), Mb).coef_[0]
+        b = LinearRegression().fit(np.column_stack([Xb, Mb]), Yb).coef_[1]
+
+        indirects.append(a * b)
+
+    return {
+        "indirect": np.mean(indirects),
+        "ci_low": np.percentile(indirects, 2.5),
+        "ci_high": np.percentile(indirects, 97.5)
+    }
+
 
 # ============================================================
 # SUBJECT SIMULATION
@@ -203,68 +197,56 @@ def generate_synthetic_cognition(z_traj, heart, resp, seed):
 
 def simulate_subject(job):
 
-    W, network_id, seed, subject_id = job
-
-    rng = np.random.default_rng(seed*100000 + subject_id)
-
-    G = rng.uniform(0.2, 1.0)
-    noise = rng.uniform(0.01, 0.05)
-
-    heart, resp = simulate_body(seed + subject_id)
-
+    W, net_id, seed, subj, G, Kb, Ke, noise = job
     L = graph_laplacian(W)
 
-    z_traj, power, E = simulate_brain_energy(
-        L, G, noise, heart, resp, seed + subject_id
+    heart = simulate_body(seed + subj)
+
+    power, E = simulate_brain_energy(
+        L, G, noise, heart, Kb, Ke, seed + subj
     )
 
-    brain_global = np.mean(power, axis=1)
+    brain = np.mean(power, axis=1)
 
-    m = metastability(z_traj)
-    coh = coherence(brain_global, heart)
-    fm = predictive_metric(power)
-
-    stab, eff = energy_metrics(E)
-
-    cog = generate_synthetic_cognition(z_traj, heart, resp, seed + subject_id)
+    cog = cognition_proxy(heart, noise)
 
     return {
-        "NetworkID": network_id,
-        "Seed": seed,
-        "SubjectID": subject_id,
-
-        "Metastability": m,
-        "BrainHeartCoherence": coh,
-        "ForwardModeling": fm,
-
-        "EnergyStability": stab,
-        "EnergyEfficiency": eff,
-
-        "SyntheticCognition": cog
+        "NetworkID": net_id,
+        "G": G,
+        "K_BODY": Kb,
+        "K_ENERGY": Ke,
+        "Noise": noise,
+        "BrainBody": coherence(brain, heart),
+        "EnergyMean": np.mean(E),
+        "EnergyStd": np.std(E),
+        "Cognition": cog
     }
 
+
 # ============================================================
-# JOB CREATION
+# JOBS (FULL PARAMETER SWEEP)
 # ============================================================
 
 def create_jobs():
-
     jobs = []
-    network_counter = 0
+    net_id = 0
 
     for N in NETWORK_SIZES:
+        for i in range(N_NETWORKS_PER_SIZE):
+            W = small_world(N, seed=i)
 
-        for net_idx in range(N_NETWORKS_PER_SIZE):
+            for G in G_VALS:
+                for Kb in K_BODY_VALS:
+                    for Ke in K_ENERGY_VALS:
+                        for noise in NOISE_VALS:
+                            for seed in range(SEEDS_PER_NETWORK):
+                                for subj in range(N_SUBJECTS_PER_SEED):
+                                    jobs.append((W, net_id, seed, subj, G, Kb, Ke, noise))
 
-            W = small_world(N, seed=net_idx)
-
-            for seed in range(SEEDS_PER_NETWORK):
-                for subj in range(N_SUBJECTS_PER_SEED):
-                    jobs.append((W, network_counter, seed, subj))
-
-            network_counter += 1
+            net_id += 1
 
     return jobs
+
 
 # ============================================================
 # MAIN
@@ -272,21 +254,46 @@ def create_jobs():
 
 if __name__ == "__main__":
 
-    print("Creating simulation jobs...")
+    print("Jobs building...")
     jobs = create_jobs()
+    print("Total simulations:", len(jobs))
 
-    print("Total jobs:", len(jobs))
+    print("Running simulation...")
+    df = Parallel(n_jobs=N_CORES, verbose=10)(
+        delayed(simulate_subject)(j) for j in jobs
+    )
 
-    results = Parallel(
-        n_jobs=N_CORES,
-        backend="loky",
-        verbose=10
-    )(delayed(simulate_subject)(job) for job in jobs)
+    df = pd.DataFrame(df)
 
-    df = pd.DataFrame(results)
+    df.to_csv(os.path.join(SAVE_DIR, "dataset.csv"), index=False)
 
-    df["NullModel"] = rng_global.normal(size=len(df))
+    # ========================================================
+    # CONDITION EFFECT SIZE ANALYSIS
+    # ========================================================
 
-    df.to_csv(os.path.join(SAVE_DIR, "dataset_full.csv"), index=False)
+    results = []
 
-    print("Dataset saved")
+    for g in df["G"].unique():
+
+        sub = df[df["G"] == g]
+
+        high = sub[sub["BrainBody"] > sub["BrainBody"].median()]["Cognition"]
+        low = sub[sub["BrainBody"] <= sub["BrainBody"].median()]["Cognition"]
+
+        d = cohens_d(high, low)
+
+        ss_total = np.var(sub["Cognition"])
+        ss_effect = np.var(sub["BrainBody"])
+
+        eta = partial_eta_squared(ss_effect, ss_total)
+
+        results.append({
+            "G": g,
+            "Cohens_d": d,
+            "Eta2": eta
+        })
+
+    res_df = pd.DataFrame(results)
+    res_df.to_csv(os.path.join(SAVE_DIR, "effect_sizes.csv"), index=False)
+
+    print(res_df)
