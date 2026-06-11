@@ -1,47 +1,38 @@
-# ============================================================
-# Brain–Body–Energy Generative Model
-# CLEAN LAYERED + NON-CIRCULAR + ROBUST STATISTICS
-# ============================================================
-
 import os
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
-import seaborn as sns
-
+import multiprocessing
 from joblib import Parallel, delayed
 from sklearn.linear_model import LinearRegression
-from scipy.stats import pearsonr
-import multiprocessing
 
 # ============================================================
-# GLOBAL PARAMETERS (EXPANDED SCOPE = CLUSTER-READY)
+# GLOBAL PARAMETERS (CLUSTER-READY SCALE CONTROL)
 # ============================================================
 
 NETWORK_SIZES = [40, 80, 120]
+TOPOLOGIES = ["smallworld", "random", "lattice"]
+
 N_NETWORKS_PER_SIZE = 3
-SEEDS_PER_NETWORK = 10
-N_SUBJECTS_PER_SEED = 50
+SEEDS_PER_NETWORK = 5
+N_SUBJECTS_PER_SEED = 30
 
-# PARAMETER SWEEP (EXPONENTIAL COMPLEXITY CONTROLLED)
-G_VALS = np.linspace(0.2, 1.0, 5)
-K_BODY_VALS = np.linspace(0.02, 0.08, 5)
-K_ENERGY_VALS = np.linspace(0.02, 0.08, 5)
-NOISE_VALS = np.linspace(0.01, 0.05, 5)
-
-T = 300
+T = 400
 DT = 0.05
 STEPS = int(T / DT)
 
-SAVE_DIR = "BrainBodyEnergy_Publishable"
+K_BODY_VALS = [0.03, 0.05, 0.07]
+K_ENERGY_VALS = [0.03, 0.05, 0.07]
+G_VALS = [0.3, 0.6, 0.9]
+NOISE_VALS = [0.01, 0.03, 0.05]
+
+SAVE_DIR = "BrainBodyEnergy_FINAL"
 os.makedirs(SAVE_DIR, exist_ok=True)
 
 N_CORES = multiprocessing.cpu_count()
 SEED_GLOBAL = 42
-rng_global = np.random.default_rng(SEED_GLOBAL)
 
 # ============================================================
-# NETWORK LAYER
+# NETWORK GENERATION
 # ============================================================
 
 def small_world(N, k=6, p=0.2, seed=None):
@@ -49,60 +40,76 @@ def small_world(N, k=6, p=0.2, seed=None):
     W = np.zeros((N, N))
 
     for i in range(N):
-        for j in range(1, k // 2 + 1):
-            W[i, (i + j) % N] = 1
-            W[i, (i - j) % N] = 1
+        for j in range(1, k//2 + 1):
+            W[i, (i+j)%N] = 1
+            W[i, (i-j)%N] = 1
 
     for i in range(N):
         for j in range(N):
-            if W[i, j] == 1 and rng.random() < p:
-                W[i, j] = 0
+            if W[i,j] == 1 and rng.random() < p:
+                W[i,j] = 0
                 new = rng.integers(N)
-                while new == i or W[i, new] == 1:
+                while new == i or W[i,new] == 1:
                     new = rng.integers(N)
-                W[i, new] = 1
+                W[i,new] = 1
 
     W = (W + W.T) / 2
     np.fill_diagonal(W, 0)
     return W
 
 
-def graph_laplacian(W):
+def random_network(N, seed=None):
+    rng = np.random.default_rng(seed)
+    W = rng.random((N, N))
+    W = (W + W.T) / 2
+    W[W < 0.92] = 0
+    np.fill_diagonal(W, 0)
+    return W
+
+
+def lattice_network(N, k=6):
+    W = np.zeros((N, N))
+    for i in range(N):
+        for j in range(1, k//2 + 1):
+            W[i,(i+j)%N] = 1
+            W[i,(i-j)%N] = 1
+    return W
+
+
+def laplacian(W):
     return np.diag(W.sum(axis=1)) - W
 
-
 # ============================================================
-# BODY LAYER (INDEPENDENT GENERATOR)
+# BODY (EXTERNAL DRIVER ONLY)
 # ============================================================
 
 def simulate_body(seed):
     rng = np.random.default_rng(seed)
     phase = 0
-    heart = []
+    out = []
 
     for _ in range(STEPS):
         phase += 2*np.pi*1.2*DT + rng.normal(0, 0.01)
-        heart.append(np.sin(phase))
+        out.append(np.sin(phase))
 
-    return np.array(heart)
-
+    return np.array(out)
 
 # ============================================================
-# ENERGY–BRAIN DYNAMICS (NON-CIRCULAR)
+# BRAIN–ENERGY DYNAMICS (STRICTLY NON-COGNITIVE)
 # ============================================================
 
-def simulate_brain_energy(L, G, noise, heart, K_BODY, K_ENERGY, seed):
+def simulate_brain_energy(L, G, noise, heart, decay, Kb, Ke, seed):
+
     rng = np.random.default_rng(seed)
-
     N = L.shape[0]
+
     z = rng.normal(size=N) + 1j*rng.normal(size=N)
     omega = rng.uniform(8, 12, N) * 2*np.pi / 100
 
     E = 1.0
-    decay = 0.02
 
-    power = np.zeros((STEPS, N))
     energy = np.zeros(STEPS)
+    power = np.zeros((STEPS, N))
 
     for t in range(STEPS):
 
@@ -111,15 +118,15 @@ def simulate_brain_energy(L, G, noise, heart, K_BODY, K_ENERGY, seed):
         prod = 0.4 + 0.2 * heart[t]
         cons = 0.05 * brain_power
 
-        dE = prod - cons - decay * E
-        E = max(E + dE * DT, 0)
+        E += (prod - cons - decay * E) * DT
+        E = max(E, 0)
 
-        forcing = K_BODY * heart[t] + K_ENERGY * E
+        forcing = Kb * heart[t] + Ke * E
 
         coupling = -G * (L @ z)
         intrinsic = (0.02 + 1j*omega - np.abs(z)**2) * z
 
-        noise_term = noise * np.sqrt(DT) * (
+        noise_term = noise*np.sqrt(DT) * (
             rng.normal(size=N) + 1j*rng.normal(size=N)
         )
 
@@ -130,170 +137,199 @@ def simulate_brain_energy(L, G, noise, heart, K_BODY, K_ENERGY, seed):
 
     return power, energy
 
+# ============================================================
+# COGNITION (EXTERNAL LATENT VARIABLE — NO CIRCULARITY)
+# ============================================================
+
+def cognition_latent(seed, heart, energy):
+    rng = np.random.default_rng(seed)
+
+    return (
+        0.4*np.tanh(np.mean(heart)) +
+        0.4*np.tanh(np.mean(energy)) +
+        0.2*np.tanh(np.std(energy)) +
+        rng.normal(0, 0.05)
+    )
 
 # ============================================================
 # METRICS
 # ============================================================
 
-def coherence(sig1, sig2):
-    phase1 = np.angle(sig1)
-    phase2 = np.angle(sig2)
-    return np.abs(np.mean(np.exp(1j*(phase1-phase2))))
-
+def coherence(x, y):
+    return np.abs(np.mean(np.exp(1j*(np.angle(x)-np.angle(y)))))
 
 def energy_stats(E):
     return np.std(E), np.mean(E)
 
-
-def cognition_proxy(heart, noise):
-    # fully independent latent process (NO leakage)
-    return np.mean(heart) + noise * np.random.randn()
-
+def forward_metric(power):
+    return np.std(np.diff(np.mean(power, axis=1)))
 
 # ============================================================
-# EFFECT SIZES
+# MEDIATION (BOOTSTRAP DIRECT + INDIRECT EFFECTS)
 # ============================================================
 
-def cohens_d(x, y):
-    nx, ny = len(x), len(y)
-    pooled = np.sqrt((np.var(x) + np.var(y)) / 2)
-    return (np.mean(x) - np.mean(y)) / (pooled + 1e-8)
+def mediation(X, M, Y, n_boot=1500):
 
-
-def partial_eta_squared(ss_effect, ss_total):
-    return ss_effect / (ss_total + 1e-8)
-
-
-# ============================================================
-# BOOTSTRAP MEDIATION
-# ============================================================
-
-def bootstrap_mediation(X, M, Y, n_boot=500):
     rng = np.random.default_rng(0)
-    indirects = []
 
-    X, M, Y = np.array(X), np.array(M), np.array(Y)
+    X, M, Y = map(np.array, (X, M, Y))
+
+    indirect, direct = [], []
+
+    n = len(X)
 
     for _ in range(n_boot):
-        idx = rng.integers(0, len(X), len(X))
+
+        idx = rng.integers(0, n, n)
 
         Xb, Mb, Yb = X[idx], M[idx], Y[idx]
 
+        # a-path
         a = LinearRegression().fit(Xb.reshape(-1,1), Mb).coef_[0]
-        b = LinearRegression().fit(np.column_stack([Xb, Mb]), Yb).coef_[1]
 
-        indirects.append(a * b)
+        # b + c'
+        model = LinearRegression().fit(np.column_stack([Xb, Mb]), Yb)
+
+        b = model.coef_[1]
+        c = model.coef_[0]
+
+        indirect.append(a * b)
+        direct.append(c)
+
+    indirect = np.array(indirect)
+    direct = np.array(direct)
 
     return {
-        "indirect": np.mean(indirects),
-        "ci_low": np.percentile(indirects, 2.5),
-        "ci_high": np.percentile(indirects, 97.5)
+        "indirect_mean": indirect.mean(),
+        "indirect_ci_low": np.percentile(indirect, 2.5),
+        "indirect_ci_high": np.percentile(indirect, 97.5),
+
+        "direct_mean": direct.mean(),
+        "direct_ci_low": np.percentile(direct, 2.5),
+        "direct_ci_high": np.percentile(direct, 97.5)
     }
 
-
 # ============================================================
-# SUBJECT SIMULATION
+# SUBJECT SIMULATION (BASE / PERTURB / ABLATION)
 # ============================================================
 
 def simulate_subject(job):
 
-    W, net_id, seed, subj, G, Kb, Ke, noise = job
-    L = graph_laplacian(W)
+    (W, net_id, seed, subj,
+     Kb, Ke, G, noise, mode) = job
+
+    rng = np.random.default_rng(seed*999 + subj)
+
+    age = rng.uniform(20, 80)
+    decay = 0.02 + 0.0003 * age
 
     heart = simulate_body(seed + subj)
 
-    power, E = simulate_brain_energy(
-        L, G, noise, heart, Kb, Ke, seed + subj
+    if mode == "perturb":
+        heart += rng.normal(0, 0.15, len(heart))
+        G += rng.normal(0, 0.05)
+        noise += rng.normal(0, 0.01)
+
+    if mode == "ablate":
+        G *= 0.2
+
+    L = laplacian(W)
+
+    power, energy = simulate_brain_energy(
+        L, G, noise, heart, decay, Kb, Ke, seed+subj
     )
 
     brain = np.mean(power, axis=1)
 
-    cog = cognition_proxy(heart, noise)
+    cog = cognition_latent(seed+subj, heart, energy)
 
     return {
         "NetworkID": net_id,
-        "G": G,
-        "K_BODY": Kb,
-        "K_ENERGY": Ke,
-        "Noise": noise,
+        "Seed": seed,
+        "Mode": mode,
         "BrainBody": coherence(brain, heart),
-        "EnergyMean": np.mean(E),
-        "EnergyStd": np.std(E),
+        "ForwardModeling": forward_metric(power),
+        "Energy": np.mean(energy),
+        "EnergyStd": np.std(energy),
         "Cognition": cog
     }
 
-
 # ============================================================
-# JOBS (FULL PARAMETER SWEEP)
+# JOB CREATION (FULL FACTORIAL ROBUSTNESS)
 # ============================================================
 
 def create_jobs():
+
     jobs = []
     net_id = 0
 
     for N in NETWORK_SIZES:
-        for i in range(N_NETWORKS_PER_SIZE):
-            W = small_world(N, seed=i)
+        for topo in TOPOLOGIES:
 
-            for G in G_VALS:
+            for i in range(N_NETWORKS_PER_SIZE):
+
+                if topo == "smallworld":
+                    W = small_world(N, seed=i)
+                elif topo == "random":
+                    W = random_network(N, seed=i)
+                else:
+                    W = lattice_network(N)
+
                 for Kb in K_BODY_VALS:
                     for Ke in K_ENERGY_VALS:
-                        for noise in NOISE_VALS:
-                            for seed in range(SEEDS_PER_NETWORK):
-                                for subj in range(N_SUBJECTS_PER_SEED):
-                                    jobs.append((W, net_id, seed, subj, G, Kb, Ke, noise))
+                        for G in G_VALS:
+                            for noise in NOISE_VALS:
+                                for seed in range(SEEDS_PER_NETWORK):
+                                    for subj in range(N_SUBJECTS_PER_SEED):
+
+                                        for mode in ["base", "perturb", "ablate"]:
+
+                                            jobs.append((W, net_id, seed, subj,
+                                                         Kb, Ke, G, noise, mode))
 
             net_id += 1
 
     return jobs
 
-
 # ============================================================
-# MAIN
+# MAIN EXECUTION
 # ============================================================
 
 if __name__ == "__main__":
 
-    print("Jobs building...")
+    print("Building jobs...")
     jobs = create_jobs()
     print("Total simulations:", len(jobs))
 
-    print("Running simulation...")
-    df = Parallel(n_jobs=N_CORES, verbose=10)(
+    results = Parallel(n_jobs=N_CORES, backend="loky", verbose=10)(
         delayed(simulate_subject)(j) for j in jobs
     )
 
-    df = pd.DataFrame(df)
-
+    df = pd.DataFrame(results)
     df.to_csv(os.path.join(SAVE_DIR, "dataset.csv"), index=False)
 
     # ========================================================
-    # CONDITION EFFECT SIZE ANALYSIS
+    # MEDIATION ANALYSIS TABLE
     # ========================================================
 
-    results = []
+    rows = []
 
-    for g in df["G"].unique():
+    for mode in df["Mode"].unique():
 
-        sub = df[df["G"] == g]
+        d = df[df["Mode"] == mode]
 
-        high = sub[sub["BrainBody"] > sub["BrainBody"].median()]["Cognition"]
-        low = sub[sub["BrainBody"] <= sub["BrainBody"].median()]["Cognition"]
+        for x in ["BrainBody", "ForwardModeling"]:
 
-        d = cohens_d(high, low)
+            med = mediation(d[x], d["Energy"], d["Cognition"])
 
-        ss_total = np.var(sub["Cognition"])
-        ss_effect = np.var(sub["BrainBody"])
+            rows.append({
+                "Mode": mode,
+                "Model": x,
+                **med
+            })
 
-        eta = partial_eta_squared(ss_effect, ss_total)
+    med_table = pd.DataFrame(rows)
 
-        results.append({
-            "G": g,
-            "Cohens_d": d,
-            "Eta2": eta
-        })
+    med_table.to_csv(os.path.join(SAVE_DIR, "mediation_table.csv"), index=False)
 
-    res_df = pd.DataFrame(results)
-    res_df.to_csv(os.path.join(SAVE_DIR, "effect_sizes.csv"), index=False)
-
-    print(res_df)
+    print(med_table)
