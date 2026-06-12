@@ -1,5 +1,5 @@
 # ============================================================
-# Brain–Body–Energy Generative Model (FIXED + LOGGING)
+# Brain–Body–Energy Generative Model (FULL FIXED + VALIDATION)
 # ============================================================
 
 import os
@@ -31,9 +31,10 @@ DT = 0.05
 STEPS = int(T / DT)
 
 N_CORES = 8
+BOOTSTRAPS = 2000
 
 # ============================================================
-# STATUS PRINT
+# STATUS
 # ============================================================
 
 def status(msg):
@@ -104,7 +105,7 @@ def simulate_external_world(seed):
     return np.array(out)
 
 # ============================================================
-# ENERGY DYNAMICS
+# ENERGY MODULATION
 # ============================================================
 
 def age_modulation(age):
@@ -114,7 +115,7 @@ def age_modulation(age):
     return G, noise, decay
 
 # ============================================================
-# BRAIN SIMULATION
+# BRAIN DYNAMICS
 # ============================================================
 
 def simulate_brain_energy(L, G, noise, heart, decay, Kb, Ke, seed):
@@ -213,13 +214,13 @@ def simulate_subject(job, mode="base"):
 # ============================================================
 
 def create_jobs():
-    status("Creating simulation jobs...")
+    status("Creating jobs...")
 
     jobs = []
     c = 0
 
     for N in NETWORK_SIZES:
-        status(f"Building networks for N={N}")
+        status(f"Network size {N}")
 
         for i in range(N_NETWORKS_PER_SIZE):
             W = normalize(small_world(N, seed=i))
@@ -232,22 +233,18 @@ def create_jobs():
                             jobs.append((W, L, c, seed, subj, Kb, Ke))
             c += 1
 
-    status(f"Total jobs created: {len(jobs)}")
+    status(f"Total jobs: {len(jobs)}")
     return jobs
 
 # ============================================================
-# ANALYSIS
+# STATS
 # ============================================================
 
 def mediation(X, M, Y):
     idx = np.random.randint(0, len(X), len(X))
 
-    Xb = X[idx]
-    Mb = M[idx]
-    Yb = Y[idx]
-
-    a = LinearRegression().fit(Xb.reshape(-1, 1), Mb).coef_[0]
-    b = LinearRegression().fit(Mb.reshape(-1, 1), Yb).coef_[0]
+    a = LinearRegression().fit(X[idx].reshape(-1, 1), M[idx]).coef_[0]
+    b = LinearRegression().fit(M[idx].reshape(-1, 1), Y[idx]).coef_[0]
 
     return a * b
 
@@ -258,53 +255,83 @@ def permutation_test(X, M, Y, n=200):
     for _ in range(n):
         p = np.random.permutation(len(X))
 
-        Xp, Mp, Yp = X[p], M[p], Y[p]
-
-        a = LinearRegression().fit(Xp.reshape(-1, 1), Mp).coef_[0]
-        b = LinearRegression().fit(Mp.reshape(-1, 1), Yp).coef_[0]
+        a = LinearRegression().fit(X[p].reshape(-1, 1), M[p]).coef_[0]
+        b = LinearRegression().fit(M[p].reshape(-1, 1), Y[p]).coef_[0]
 
         null.append(a * b)
 
     return np.mean(null), np.std(null)
 
+
+def bootstrap_ci(X, M, Y, n=2000):
+    rng = np.random.default_rng(0)
+    vals = []
+
+    for _ in range(n):
+        idx = rng.integers(0, len(X), len(X))
+
+        a = LinearRegression().fit(X[idx].reshape(-1, 1), M[idx]).coef_[0]
+        b = LinearRegression().fit(M[idx].reshape(-1, 1), Y[idx]).coef_[0]
+
+        vals.append(a * b)
+
+    return np.percentile(vals, 2.5), np.percentile(vals, 97.5)
+
 # ============================================================
-# ANALYSIS WRAPPER
+# ANALYSIS
 # ============================================================
 
 def analyze(data, label):
+
     status(f"Analyzing {label}")
 
     df = pd.DataFrame(data)
 
     df["Null"] = np.random.default_rng(0).normal(size=len(df))
 
-    scaler = StandardScaler()
-    df_scaled = scaler.fit_transform(df)
-
-    df = pd.DataFrame(df_scaled, columns=df.columns)
+    df = pd.DataFrame(StandardScaler().fit_transform(df),
+                      columns=df.columns)
 
     results = []
 
-    for name, col in {
-        "BrainBody": "BrainBody",
-        "ForwardModeling": "ForwardModeling",
-        "Null": "Null"
-    }.items():
+    for name in ["BrainBody", "ForwardModeling", "Null"]:
 
-        r, _ = pearsonr(df[col], df["Cognition"])
+        X = df[name].values
+        M = df["Energy"].values
+        Y = df["Cognition"].values
 
-        med = mediation(df[col].values, df["Energy"].values, df["Cognition"].values)
+        r = pearsonr(X, Y)[0]
 
-        null_mean, null_std = permutation_test(
-            df[col].values,
-            df["Energy"].values,
-            df["Cognition"].values
-        )
+        med = mediation(X, M, Y)
 
-        results.append([label, name, r, med, null_mean, null_std])
+        null_mean, null_std = permutation_test(X, M, Y)
+
+        ci_low, ci_high = bootstrap_ci(X, M, Y)
+
+        results.append([
+            label,
+            name,
+            r,
+            med,
+            null_mean,
+            null_std,
+            (med - null_mean) / (null_std + 1e-8),
+            ci_low,
+            ci_high,
+            (ci_low > 0 or ci_high < 0)
+        ])
 
     return pd.DataFrame(results, columns=[
-        "Condition", "Model", "r", "Mediation", "NullMean", "NullStd"
+        "Condition",
+        "Model",
+        "r",
+        "Mediation",
+        "NullMean",
+        "NullStd",
+        "Zscore",
+        "CI_low",
+        "CI_high",
+        "CI_excludes_0"
     ])
 
 # ============================================================
@@ -313,17 +340,17 @@ def analyze(data, label):
 
 if __name__ == "__main__":
 
-    status("MAIN JOB STARTING PIPELINE")
+    status("MAIN JOB START")
 
     jobs = create_jobs()
 
-    status("Running BASELINE simulation...")
+    status("Running BASELINE")
     BASE = Parallel(n_jobs=N_CORES)(delayed(simulate_subject)(j, "base") for j in jobs)
 
-    status("Running PERTURBATION simulation...")
+    status("Running PERTURBATION")
     PERT = Parallel(n_jobs=N_CORES)(delayed(simulate_subject)(j, "perturb") for j in jobs)
 
-    status("Running ABLATION simulation...")
+    status("Running ABLATION")
     ABL = Parallel(n_jobs=N_CORES)(delayed(simulate_subject)(j, "ablate") for j in jobs)
 
     base_df = analyze(BASE, "Baseline")
@@ -332,7 +359,7 @@ if __name__ == "__main__":
 
     full = pd.concat([base_df, pert_df, abl_df])
 
-    status("Saving results...")
+    status("Saving results")
 
     base_df.to_csv(f"{RESULTS_DIR}/baseline.csv", index=False)
     pert_df.to_csv(f"{RESULTS_DIR}/perturbation.csv", index=False)
