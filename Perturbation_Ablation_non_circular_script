@@ -1,3 +1,376 @@
+This code implements a large-scale in silico generative simulation of coupled brain–body–energy 
+dynamics using networks of nonlinear oscillators. It constructs synthetic small-world neural networks, 
+couples them to a stochastic “cardiac” oscillator and an external dynamical signal, and introduces an explicit 
+energy variable that is produced by peripheral input, consumed by neural activity, and fed back into neural dynamics.
+Across many simulated subjects with varying age-dependent parameters (modulating coupling strength, noise, and energy decay),
+the model runs parallel simulations under baseline, perturbation, and energy-ablation conditions. It then computes summary
+metrics of brain–body coherence, neural temporal predictability, energy states, and decoding-based “cognitive” performance 
+on an external signal. Finally, it performs statistical analyses including correlations, simple mediation via energy as 
+an intermediate variable, and permutation tests to evaluate how brain–body coupling and
+
+# ============================================================
+# Brain–Body–Energy Generative Model (FIXED + LOGGING)
+# ============================================================
+
+import os
+import numpy as np
+import pandas as pd
+from joblib import Parallel, delayed
+from sklearn.linear_model import LinearRegression
+from sklearn.preprocessing import StandardScaler
+from scipy.stats import pearsonr
+
+# ============================================================
+# OUTPUT
+# ============================================================
+
+RESULTS_DIR = "BrainBodyEnergy_Results"
+os.makedirs(RESULTS_DIR, exist_ok=True)
+
+# ============================================================
+# GLOBAL PARAMETERS
+# ============================================================
+
+NETWORK_SIZES = [40, 80, 120]
+N_NETWORKS_PER_SIZE = 3
+SEEDS_PER_NETWORK = 10
+N_SUBJECTS_PER_SEED = 30
+
+T = 500
+DT = 0.05
+STEPS = int(T / DT)
+
+N_CORES = 8
+
+# ============================================================
+# STATUS PRINT
+# ============================================================
+
+def status(msg):
+print(f"\n[MAIN JOB] >>> {msg}\n", flush=True)
+
+# ============================================================
+# NETWORK
+# ============================================================
+
+def small_world(N, k=6, p=0.2, seed=None):
+rng = np.random.default_rng(seed)
+W = np.zeros((N, N))
+
+for i in range(N):
+for j in range(1, k // 2 + 1):
+W[i, (i + j) % N] = 1
+W[i, (i - j) % N] = 1
+
+for i in range(N):
+for j in range(i + 1, N):
+if W[i, j] == 1 and rng.random() < p:
+W[i, j] = W[j, i] = 0
+new = rng.integers(N)
+while new == i:
+new = rng.integers(N)
+W[i, new] = W[new, i] = 1
+
+np.fill_diagonal(W, 0)
+return W
+
+
+def normalize(W):
+eig = np.max(np.abs(np.linalg.eigvals(W)))
+return W / (eig + 1e-8)
+
+
+def laplacian(W):
+return np.diag(W.sum(axis=1)) - W
+
+# ============================================================
+# BODY
+# ============================================================
+
+def simulate_body(seed):
+rng = np.random.default_rng(seed)
+phase = 0
+out = []
+
+for _ in range(STEPS):
+phase += 2 * np.pi * 1.2 * DT + rng.normal(0, 0.01)
+out.append(np.sin(phase))
+
+return np.array(out)
+
+# ============================================================
+# EXTERNAL WORLD
+# ============================================================
+
+def simulate_external_world(seed):
+rng = np.random.default_rng(seed)
+x = 0
+out = []
+
+for _ in range(STEPS):
+x = 0.95 * x + rng.normal(0, 1)
+out.append(np.tanh(x))
+
+return np.array(out)
+
+# ============================================================
+# ENERGY DYNAMICS
+# ============================================================
+
+def age_modulation(age):
+G = 0.6 * np.exp(-((age - 40) / 30) ** 2)
+noise = 0.02 + 0.0004 * age
+decay = 0.02 + 0.0003 * age
+return G, noise, decay
+
+# ============================================================
+# BRAIN SIMULATION
+# ============================================================
+
+def simulate_brain_energy(L, G, noise, heart, decay, Kb, Ke, seed):
+rng = np.random.default_rng(seed)
+
+N = L.shape[0]
+z = rng.normal(size=N) + 1j * rng.normal(size=N)
+omega = rng.uniform(8, 12, N) * 2 * np.pi / 100
+
+E = 1.0
+power = np.zeros((STEPS, N))
+
+for t in range(STEPS):
+
+brain_power = np.mean(np.abs(z) ** 2)
+
+dE = (0.4 + 0.2 * heart[t]) - 0.05 * brain_power - decay * E
+E = max(E + dE * DT, 0)
+
+forcing = Kb * heart[t] + Ke * E
+
+dz = (0.02 + 1j * omega - np.abs(z) ** 2) * z \
+- G * (L @ z) \
++ forcing * z \
++ noise * (rng.normal(size=N) + 1j * rng.normal(size=N)) * np.sqrt(DT)
+
+z += dz * DT
+power[t] = np.abs(z) ** 2
+
+return power, E
+
+# ============================================================
+# METRICS
+# ============================================================
+
+def coherence(a, b):
+a = (a - np.mean(a)) / (np.std(a) + 1e-8)
+b = (b - np.mean(b)) / (np.std(b) + 1e-8)
+return np.mean(a * b)
+
+
+def predictive_metric(power):
+s = np.mean(power, axis=1)
+return 1.0 / (np.var(np.diff(s)) + 1e-8)
+
+# ============================================================
+# COGNITION
+# ============================================================
+
+def compute_cognition(brain, external):
+X = np.vstack([brain[:-1], brain[1:]]).T
+y = external[1:]
+
+model = LinearRegression().fit(X, y)
+pred = model.predict(X)
+
+return 1.0 / (np.mean((pred - y) ** 2) + 1e-8)
+
+# ============================================================
+# SUBJECT
+# ============================================================
+
+def simulate_subject(job, mode="base"):
+W, L, net_id, seed, subj, Kb, Ke = job
+
+rng = np.random.default_rng(seed * 10000 + subj)
+
+age = rng.uniform(20, 80)
+G, noise, decay = age_modulation(age)
+
+heart = simulate_body(seed + subj)
+external = simulate_external_world(seed * 999 + subj)
+
+if mode == "perturb":
+heart += rng.normal(0, 0.2, size=len(heart))
+external += rng.normal(0, 0.2, size=len(external))
+Kb += rng.normal(0, 0.02)
+Ke += rng.normal(0, 0.02)
+
+if mode == "ablate":
+Ke = 0.0
+
+power, E = simulate_brain_energy(L, G, noise, heart, decay, Kb, Ke, seed + subj)
+
+brain = np.mean(power, axis=1)
+
+return {
+"BrainBody": coherence(brain, heart),
+"ForwardModeling": predictive_metric(power),
+"Energy": np.mean(E),
+"Cognition": compute_cognition(brain, external)
+}
+
+# ============================================================
+# JOBS
+# ============================================================
+
+def create_jobs():
+status("Creating simulation jobs...")
+
+jobs = []
+c = 0
+
+for N in NETWORK_SIZES:
+status(f"Building networks for N={N}")
+
+for i in range(N_NETWORKS_PER_SIZE):
+W = normalize(small_world(N, seed=i))
+L = laplacian(W)
+
+for Kb in [0.03, 0.05]:
+for Ke in [0.03, 0.05]:
+for seed in range(SEEDS_PER_NETWORK):
+for subj in range(N_SUBJECTS_PER_SEED):
+jobs.append((W, L, c, seed, subj, Kb, Ke))
+c += 1
+
+status(f"Total jobs created: {len(jobs)}")
+return jobs
+
+# ============================================================
+# ANALYSIS
+# ============================================================
+
+def mediation(X, M, Y):
+idx = np.random.randint(0, len(X), len(X))
+
+Xb = X[idx]
+Mb = M[idx]
+Yb = Y[idx]
+
+a = LinearRegression().fit(Xb.reshape(-1, 1), Mb).coef_[0]
+b = LinearRegression().fit(Mb.reshape(-1, 1), Yb).coef_[0]
+
+return a * b
+
+
+def permutation_test(X, M, Y, n=200):
+null = []
+
+for _ in range(n):
+p = np.random.permutation(len(X))
+
+Xp, Mp, Yp = X[p], M[p], Y[p]
+
+a = LinearRegression().fit(Xp.reshape(-1, 1), Mp).coef_[0]
+b = LinearRegression().fit(Mp.reshape(-1, 1), Yp).coef_[0]
+
+null.append(a * b)
+
+return np.mean(null), np.std(null)
+
+# ============================================================
+# ANALYSIS WRAPPER
+# ============================================================
+
+def analyze(data, label):
+status(f"Analyzing {label}")
+
+df = pd.DataFrame(data)
+
+df["Null"] = np.random.default_rng(0).normal(size=len(df))
+
+scaler = StandardScaler()
+df_scaled = scaler.fit_transform(df)
+
+df = pd.DataFrame(df_scaled, columns=df.columns)
+
+results = []
+
+for name, col in {
+"BrainBody": "BrainBody",
+"ForwardModeling": "ForwardModeling",
+"Null": "Null"
+}.items():
+
+r, _ = pearsonr(df[col], df["Cognition"])
+
+med = mediation(df[col].values, df["Energy"].values, df["Cognition"].values)
+
+null_mean, null_std = permutation_test(
+df[col].values,
+df["Energy"].values,
+df["Cognition"].values
+)
+
+results.append([label, name, r, med, null_mean, null_std])
+
+return pd.DataFrame(results, columns=[
+"Condition", "Model", "r", "Mediation", "NullMean", "NullStd"
+])
+
+# ============================================================
+# RUN
+# ============================================================
+
+if __name__ == "__main__":
+
+status("MAIN JOB STARTING PIPELINE")
+
+jobs = create_jobs()
+
+status("Running BASELINE simulation...")
+BASE = Parallel(n_jobs=N_CORES)(delayed(simulate_subject)(j, "base") for j in jobs)
+
+status("Running PERTURBATION simulation...")
+PERT = Parallel(n_jobs=N_CORES)(delayed(simulate_subject)(j, "perturb") for j in jobs)
+
+status("Running ABLATION simulation...")
+ABL = Parallel(n_jobs=N_CORES)(delayed(simulate_subject)(j, "ablate") for j in jobs)
+
+base_df = analyze(BASE, "Baseline")
+pert_df = analyze(PERT, "Perturbation")
+abl_df = analyze(ABL, "Ablation")
+
+full = pd.concat([base_df, pert_df, abl_df])
+
+status("Saving results...")
+
+base_df.to_csv(f"{RESULTS_DIR}/baseline.csv", index=False)
+pert_df.to_csv(f"{RESULTS_DIR}/perturbation.csv", index=False)
+abl_df.to_csv(f"{RESULTS_DIR}/ablation.csv", index=False)
+full.to_csv(f"{RESULTS_DIR}/FULL_RESULTS.csv", index=False)
+
+status("DONE ✔")
+
+print(base_df)
+print(pert_df)
+print(abl_df)
+print(f"\nSaved in {RESULTS_DIR}/")
+
+
+This code implements a large-scale computational simulation of a “brain–body–energy” system to
+study how neural dynamics, autonomic signals, and energy constraints jointly relate to cognition.
+It generates small-world brain networks and simulates coupled oscillatory brain activity whose dynamics 
+are modulated by both an internal energy variable and an external physiological signal (a synthetic 
+heart-rate–like oscillation) as well as a noisy environmental input. Each simulated subject varies 
+in age-dependent parameters that affect neural noise, coupling strength, and energy decay. The model 
+then computes several outcome metrics, including brain–body coherence (synchronization between neural 
+activity and heart signal), a predictive stability measure of neural dynamics, an energy state, and a 
+“cognition” score based on how well brain activity predicts external signals. Across many simulated 
+subjects and network configurations, the code runs baseline, perturbation, and ablation conditions in parallel, `
+and finally performs mediation and statistical analyses (correlation, bootstrap confidence intervals, 
+permutation tests) to test whether energy mediates the relationship between brain–body coupling and cognitive 
+performance, saving all results for comparison across experimental conditions.
+
 # ============================================================
 # Brain–Body–Energy Generative Model (FULL FIXED + VALIDATION)
 # ============================================================
