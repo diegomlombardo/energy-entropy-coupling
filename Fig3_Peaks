@@ -1,0 +1,967 @@
+# ============================================================
+# FULL ANALYSIS:
+# Brain-Body-Energy Lifespan Trajectories
+# Peak/Trough Detection Version
+# ============================================================
+
+
+import os
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+from scipy.signal import find_peaks
+from statsmodels.stats.multitest import multipletests
+from sklearn.model_selection import KFold
+
+
+# ============================================================
+# CONFIGURATION
+# ============================================================
+
+SAVE_DIR = "BrainBodyEnergy_Publication"
+
+FIG_DIR = os.path.join(
+    SAVE_DIR,
+    "figures"
+)
+
+os.makedirs(
+    FIG_DIR,
+    exist_ok=True
+)
+
+
+sns.set(style="whitegrid")
+
+plt.rcParams.update({
+    "axes.labelsize":14,
+    "axes.titlesize":16,
+    "lines.linewidth":3
+})
+
+
+
+# ============================================================
+# LOAD DATA
+# ============================================================
+
+
+df = pd.read_csv(
+    os.path.join(
+        SAVE_DIR,
+        "dataset_full.csv"
+    )
+)
+
+
+age_bins = np.arange(
+    20,
+    85,
+    5
+)
+
+
+df["Age_bin"] = pd.cut(
+    df["Age"],
+    bins=age_bins
+)
+
+
+age_centers = [
+    b.mid for b in df["Age_bin"].cat.categories
+]
+
+
+
+predictors = [
+    "BrainBody",
+    "ActiveInference"
+]
+
+
+colors = {
+    "BrainBody":"#1f77b4",
+    "ActiveInference":"#ff7f0e"
+}
+
+
+
+# ============================================================
+# BOOTSTRAP INDIRECT EFFECT
+# ============================================================
+
+
+def bootstrap_indirect(
+        data,
+        predictor,
+        outcome,
+        n_boot=2000):
+
+
+    X = data[predictor].values
+    M = data["EnergyEfficiency"].values
+    Y = data[outcome].values
+
+
+    n=len(X)
+
+    rng=np.random.default_rng(42)
+
+    effects=[]
+
+
+    for _ in range(n_boot):
+
+        idx=rng.integers(
+            0,
+            n,
+            n
+        )
+
+
+        a=np.corrcoef(
+            X[idx],
+            M[idx]
+        )[0,1]
+
+
+        b=np.corrcoef(
+            M[idx],
+            Y[idx]
+        )[0,1]
+
+
+        effects.append(
+            a*b
+        )
+
+
+    effects=np.array(effects)
+
+
+    return (
+        np.mean(effects),
+        np.percentile(effects,2.5),
+        np.percentile(effects,97.5),
+        effects
+    )
+
+
+
+# ============================================================
+# AGE TRAJECTORIES
+# ============================================================
+
+
+diff_results={
+    p:[]
+    for p in predictors+["NullModel"]
+}
+
+
+pvals_results={
+    p:[]
+    for p in predictors
+}
+
+
+
+for age_bin,group in df.groupby("Age_bin"):
+
+
+    # null
+    null_mean,null_low,null_high,_ = bootstrap_indirect(
+        group,
+        "NullModel",
+        "CogEnergy"
+    )
+
+
+    diff_results["NullModel"].append(
+        [
+            null_mean,
+            null_low,
+            null_high
+        ]
+    )
+
+
+
+    for p in predictors:
+
+
+        mean,low,high,effects = bootstrap_indirect(
+            group,
+            p,
+            "CogEnergy"
+        )
+
+
+        diff_results[p].append(
+            [
+                mean,
+                low,
+                high
+            ]
+        )
+
+
+
+        # compare bootstrap distribution
+        # against null distribution
+
+        null_effects = bootstrap_indirect(
+            group,
+            "NullModel",
+            "CogEnergy"
+        )[3]
+
+
+        pval = np.mean(
+            np.abs(effects)
+            <=
+            np.abs(null_effects)
+        )
+
+
+        pvals_results[p].append(
+            pval
+        )
+
+
+
+
+# ============================================================
+# FDR CORRECTION
+# ============================================================
+
+
+fdr_results={}
+
+
+for p in predictors:
+
+
+    reject,padj,_,_=multipletests(
+        pvals_results[p],
+        alpha=0.05,
+        method="fdr_bh"
+    )
+
+
+    fdr_results[p]={
+        "reject":reject,
+        "p_adj":padj
+    }
+
+
+
+
+
+# ============================================================
+# PEAK AND TROUGHT DETECTION
+# ============================================================
+
+
+peak_results={}
+
+
+
+for p in predictors:
+
+
+    values=np.array(
+        [
+            x[0]
+            for x in diff_results[p]
+        ]
+    )
+
+
+    significant=fdr_results[p]["reject"]
+
+
+    filtered=values.copy()
+
+    filtered[
+        ~significant
+    ]=np.nan
+
+
+
+    detected=[]
+
+
+
+    # -------------------------
+    # Positive peaks
+    # -------------------------
+
+    pos=filtered.copy()
+
+    pos[np.isnan(pos)] = -np.inf
+
+
+    pos_idx,_=find_peaks(
+        pos
+    )
+
+
+    for idx in pos_idx:
+
+
+        if pos[idx]>0:
+
+
+            detected.append({
+
+                "Model":p,
+                "Type":"Positive peak",
+                "Age":age_centers[idx],
+                "Effect":values[idx]
+
+            })
+
+
+
+    # -------------------------
+    # Negative peaks
+    # -------------------------
+
+    neg=filtered.copy()
+
+    neg[np.isnan(neg)] = np.inf
+
+
+    neg_idx,_=find_peaks(
+        -neg
+    )
+
+
+
+    for idx in neg_idx:
+
+
+        if neg[idx]<0:
+
+
+            detected.append({
+
+                "Model":p,
+                "Type":"Negative peak",
+                "Age":age_centers[idx],
+                "Effect":values[idx]
+
+            })
+
+
+    peak_results[p]=detected
+
+
+
+
+peak_table=pd.DataFrame(
+    [
+        row
+        for p in predictors
+        for row in peak_results[p]
+    ]
+)
+
+
+peak_table.to_csv(
+    os.path.join(
+        SAVE_DIR,
+        "lifespan_peak_trough_table.csv"
+    ),
+    index=False
+)
+
+
+
+print(
+    peak_table
+)
+
+
+
+# ============================================================
+# CROSS VALIDATION
+# ============================================================
+
+
+kf=KFold(
+    n_splits=5,
+    shuffle=True,
+    random_state=42
+)
+
+
+cv_results={
+    p:[]
+    for p in predictors
+}
+
+
+
+for train_idx,_ in kf.split(df):
+
+
+    fold=df.iloc[train_idx].copy()
+
+
+    fold["Age_bin"]=pd.cut(
+        fold["Age"],
+        bins=age_bins
+    )
+
+
+    for p in predictors:
+
+
+        curve=[]
+
+
+        for _,group in fold.groupby("Age_bin"):
+
+
+            mean,_,_,_=bootstrap_indirect(
+                group,
+                p,
+                "CogEnergy"
+            )
+
+
+            curve.append(mean)
+
+
+
+        cv_results[p].append(
+            curve
+        )
+
+
+# ============================================================
+# SAVE MEDIATION RESULTS TABLE
+# ============================================================
+
+
+med_rows=[]
+
+
+for i,age in enumerate(age_centers):
+
+    row={
+        "Age":age
+    }
+
+
+    for p in predictors+["NullModel"]:
+
+
+        row[f"{p}_mean"] = diff_results[p][i][0]
+        row[f"{p}_CI_low"] = diff_results[p][i][1]
+        row[f"{p}_CI_high"] = diff_results[p][i][2]
+
+
+        if p in predictors:
+
+            row[f"{p}_p"] = pvals_results[p][i]
+
+            row[f"{p}_FDR"] = int(
+                fdr_results[p]["reject"][i]
+            )
+
+
+    med_rows.append(row)
+
+
+
+med_table=pd.DataFrame(
+    med_rows
+)
+
+
+med_table.to_csv(
+    os.path.join(
+        SAVE_DIR,
+        "mediation_age_results.csv"
+    ),
+    index=False
+)
+
+
+
+# ============================================================
+# ENERGY EFFICIENCY TRAJECTORY
+# ============================================================
+
+
+energy_mean = (
+    df.groupby("Age_bin")
+    ["EnergyEfficiency"]
+    .mean()
+)
+
+
+energy_std = (
+    df.groupby("Age_bin")
+    ["EnergyEfficiency"]
+    .std()
+)
+
+
+energy_n = (
+    df.groupby("Age_bin")
+    ["EnergyEfficiency"]
+    .count()
+)
+
+
+energy_ci = (
+    1.96 *
+    energy_std /
+    np.sqrt(energy_n)
+)
+
+
+
+
+
+# ============================================================
+# PLOTTING
+# ============================================================
+
+
+fig,axs=plt.subplots(
+    1,
+    3,
+    figsize=(18,5)
+)
+
+
+
+# ============================================================
+# PANEL A
+# Energy efficiency
+# ============================================================
+
+
+ax=axs[0]
+
+
+ax.plot(
+    age_centers,
+    energy_mean,
+    color="purple",
+    linewidth=3
+)
+
+
+ax.fill_between(
+    age_centers,
+    energy_mean-energy_ci,
+    energy_mean+energy_ci,
+    color="purple",
+    alpha=.25
+)
+
+
+
+# subject jitter
+
+for i,age_bin in enumerate(
+        df["Age_bin"].cat.categories):
+
+
+    y=df[
+        df["Age_bin"]==age_bin
+    ]["EnergyEfficiency"]
+
+
+    x=np.random.normal(
+        age_centers[i],
+        .7,
+        len(y)
+    )
+
+
+    ax.scatter(
+        x,
+        y,
+        color="purple",
+        alpha=.25,
+        s=20
+    )
+
+
+ax.set_xlabel(
+    "Age (years)"
+)
+
+ax.set_ylabel(
+    "Energy efficiency"
+)
+
+
+ax.set_title(
+    "A) Lifespan trajectory"
+)
+
+
+
+
+
+# ============================================================
+# PANEL B
+# Effect vs Null
+# ============================================================
+
+
+ax=axs[1]
+
+
+
+# null curve
+
+null=np.array(
+    [
+        x[0]
+        for x in diff_results["NullModel"]
+    ]
+)
+
+
+ax.plot(
+    age_centers,
+    null,
+    color="gray",
+    linewidth=2,
+    label="Null"
+)
+
+
+
+for p in predictors:
+
+
+    values=np.array(
+        [
+            x[0]
+            for x in diff_results[p]
+        ]
+    )
+
+
+    low=np.array(
+        [
+            x[1]
+            for x in diff_results[p]
+        ]
+    )
+
+
+    high=np.array(
+        [
+            x[2]
+            for x in diff_results[p]
+        ]
+    )
+
+
+
+    ax.plot(
+        age_centers,
+        values,
+        color=colors[p],
+        label=p,
+        linewidth=3
+    )
+
+
+    ax.fill_between(
+        age_centers,
+        low,
+        high,
+        color=colors[p],
+        alpha=.18
+    )
+
+
+
+    # ---------------------------------
+    # Add peak markers
+    # ---------------------------------
+
+
+    for peak in peak_results[p]:
+
+
+        if peak["Type"]=="Positive peak":
+
+            marker="^"
+            offset=.015
+
+
+        else:
+
+            marker="v"
+            offset=-.015
+
+
+
+        ax.scatter(
+
+            peak["Age"],
+
+            peak["Effect"],
+
+            s=150,
+
+            marker=marker,
+
+            color=colors[p],
+
+            edgecolor="black",
+
+            linewidth=1,
+
+            zorder=10
+        )
+
+
+        ax.text(
+
+            peak["Age"],
+
+            peak["Effect"]+offset,
+
+            str(int(peak["Age"]))+"y",
+
+            fontsize=10,
+
+            ha="center",
+
+            color=colors[p]
+
+        )
+
+
+
+
+
+# zero reference
+
+ax.axhline(
+    0,
+    color="black",
+    linewidth=1
+)
+
+
+
+# significance bars
+
+def add_sig_bar(
+        ax,
+        ages,
+        mask,
+        ypos,
+        color):
+
+
+    for age,sig in zip(
+        ages,
+        mask
+    ):
+
+        if sig:
+
+            ax.plot(
+                [
+                    age-2,
+                    age+2
+                ],
+                [
+                    ypos,
+                    ypos
+                ],
+                color=color,
+                linewidth=4
+            )
+
+
+
+ymax=ax.get_ylim()[1]
+
+
+add_sig_bar(
+    ax,
+    age_centers,
+    fdr_results["BrainBody"]["reject"],
+    ymax,
+    "#1f77b4"
+)
+
+
+add_sig_bar(
+    ax,
+    age_centers,
+    fdr_results["ActiveInference"]["reject"],
+    ymax-.03,
+    "#ff7f0e"
+)
+
+
+
+
+ax.set_xlabel(
+    "Age (years)"
+)
+
+ax.set_ylabel(
+    "Δ indirect effect vs null"
+)
+
+
+ax.set_title(
+    "B) Lifespan mediation peaks"
+)
+
+
+ax.legend(
+    frameon=False
+)
+
+
+
+
+
+# ============================================================
+# PANEL C
+# Cross validation
+# ============================================================
+
+
+ax=axs[2]
+
+
+
+for p in predictors:
+
+
+    curves=np.array(
+        cv_results[p]
+    )
+
+
+    mean_curve=np.nanmean(
+        curves,
+        axis=0
+    )
+
+
+    sd_curve=np.nanstd(
+        curves,
+        axis=0
+    )
+
+
+
+    ax.plot(
+        age_centers,
+        mean_curve,
+        color=colors[p],
+        linewidth=3,
+        label=p
+    )
+
+
+
+    ax.fill_between(
+
+        age_centers,
+
+        mean_curve-sd_curve,
+
+        mean_curve+sd_curve,
+
+        color=colors[p],
+
+        alpha=.2
+    )
+
+
+
+ax.axhline(
+    0,
+    color="black",
+    linewidth=1
+)
+
+
+ax.set_xlabel(
+    "Age (years)"
+)
+
+
+ax.set_ylabel(
+    "Δ effect vs null"
+)
+
+
+ax.set_title(
+    "C) Cross-validation stability"
+)
+
+
+ax.legend(
+    frameon=False
+)
+
+
+
+
+
+# ============================================================
+# SAVE FIGURE
+# ============================================================
+
+
+plt.tight_layout()
+
+
+plt.savefig(
+
+    os.path.join(
+        FIG_DIR,
+        "BrainBody_ActiveInference_peak_trough_analysis.png"
+    ),
+
+    dpi=600,
+
+    bbox_inches="tight"
+
+)
+
+
+plt.close()
+
+
+
+print(
+    "✅ Complete analysis finished"
+)
+
+print(
+    "✅ Peak/trough table saved:"
+)
+
+print(
+    os.path.join(
+        SAVE_DIR,
+        "lifespan_peak_trough_table.csv"
+    )
+)
