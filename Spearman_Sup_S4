@@ -1,0 +1,701 @@
+# ============================================================
+# LIFESPAN TRAJECTORY ANALYSIS
+#
+# Brain-Heart
+# Brain-Respiration
+# Brain-Body
+# Active Inference
+#
+# Fixed version:
+# - scale normalization
+# - robust peak detection
+# - bootstrap CI
+# - raw + z-score trajectories
+# ============================================================
+
+
+import os
+import numpy as np
+import pandas as pd
+
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+from scipy.ndimage import gaussian_filter1d
+
+
+
+# ============================================================
+# CONFIG
+# ============================================================
+
+
+SAVE_DIR = (
+    "BrainHeartRespiration_"
+    "Spearman_NonParametric"
+)
+
+
+FIG_DIR=os.path.join(
+    SAVE_DIR,
+    "figures"
+)
+
+
+DATA_FILE=os.path.join(
+    SAVE_DIR,
+    "dataset_full_spearman.csv"
+)
+
+
+
+os.makedirs(
+    FIG_DIR,
+    exist_ok=True
+)
+
+
+
+sns.set(
+    style="whitegrid"
+)
+
+
+plt.rcParams.update({
+
+    "axes.labelsize":14,
+
+    "axes.titlesize":15,
+
+    "lines.linewidth":3
+
+})
+
+
+
+# ============================================================
+# LOAD DATA
+# ============================================================
+
+
+df=pd.read_csv(
+    DATA_FILE
+)
+
+
+
+# ============================================================
+# AGE WINDOWS
+# ============================================================
+
+
+age_bins=np.arange(
+    20,
+    85,
+    5
+)
+
+
+df["Age_bin"]=pd.cut(
+    df["Age"],
+    bins=age_bins
+)
+
+
+age_centers=np.array([
+
+    x.mid
+
+    for x in df["Age_bin"].cat.categories
+
+])
+
+
+
+# ============================================================
+# VARIABLES
+# ============================================================
+
+
+models={
+
+
+    "Brain-Heart":
+    "BrainHeart_Spearman",
+
+
+    "Brain-Respiration":
+    "BrainResp_Spearman",
+
+
+    "Brain-Body":
+    "BrainBody_Spearman_Model",
+
+
+    "ActiveInference":
+    "ActiveInference"
+
+}
+
+
+
+colors={
+
+    "Brain-Heart":
+    "#1f77b4",
+
+
+    "Brain-Respiration":
+    "#2ca02c",
+
+
+    "Brain-Body":
+    "#d62728",
+
+
+    "ActiveInference":
+    "#ff7f0e"
+
+}
+
+
+
+
+# ============================================================
+# BOOTSTRAP FUNCTION
+# ============================================================
+
+
+def bootstrap_mean(
+        x,
+        n_boot=2000):
+
+
+    x=np.asarray(
+        x
+    )
+
+
+    rng=np.random.default_rng(
+        42
+    )
+
+
+    means=[]
+
+
+    for _ in range(n_boot):
+
+        sample=rng.choice(
+
+            x,
+
+            size=len(x),
+
+            replace=True
+
+        )
+
+
+        means.append(
+            np.mean(sample)
+        )
+
+
+    return (
+
+        np.mean(means),
+
+        np.percentile(
+            means,
+            2.5
+        ),
+
+        np.percentile(
+            means,
+            97.5
+        )
+
+    )
+
+
+
+
+# ============================================================
+# CALCULATE AGE TRAJECTORIES
+# ============================================================
+
+
+trajectory={}
+
+
+
+for name,var in models.items():
+
+
+    trajectory[name]={
+
+        "mean":[],
+        "low":[],
+        "high":[]
+
+    }
+
+
+
+    for age_bin,group in df.groupby(
+        "Age_bin"
+    ):
+
+
+        m,l,h=bootstrap_mean(
+
+            group[var].dropna()
+
+        )
+
+
+        trajectory[name]["mean"].append(
+            m
+        )
+
+        trajectory[name]["low"].append(
+            l
+        )
+
+        trajectory[name]["high"].append(
+            h
+        )
+
+
+
+
+# convert arrays
+
+for name in models:
+
+
+    for key in trajectory[name]:
+
+        trajectory[name][key]=np.array(
+            trajectory[name][key]
+        )
+
+
+
+
+
+# ============================================================
+# NORMALIZE TRAJECTORIES
+# ============================================================
+
+
+trajectory_z={}
+
+
+
+for name in models:
+
+
+    x=trajectory[name]["mean"]
+
+
+    trajectory_z[name]=(
+
+        x-np.mean(x)
+
+    ) / np.std(x)
+
+
+
+
+
+
+# ============================================================
+# ROBUST PEAK DETECTION
+# ============================================================
+
+
+peak_rows=[]
+
+
+
+for name in models:
+
+
+    # smooth first
+
+    smooth=gaussian_filter1d(
+
+        trajectory_z[name],
+
+        sigma=1
+
+    )
+
+
+    max_idx=np.argmax(
+        smooth
+    )
+
+
+    min_idx=np.argmin(
+        smooth
+    )
+
+
+    peak_rows.append({
+
+        "Model":name,
+
+        "Peak_type":
+        "Maximum increase",
+
+        "Age_window":
+        f"{int(age_bins[max_idx])}-{int(age_bins[max_idx+1])}",
+
+        "Age_center":
+        age_centers[max_idx],
+
+        "Z_value":
+        smooth[max_idx]
+
+    })
+
+
+
+    peak_rows.append({
+
+        "Model":name,
+
+        "Peak_type":
+        "Maximum decrease",
+
+        "Age_window":
+        f"{int(age_bins[min_idx])}-{int(age_bins[min_idx+1])}",
+
+        "Age_center":
+        age_centers[min_idx],
+
+        "Z_value":
+        smooth[min_idx]
+
+    })
+
+
+
+
+peak_table=pd.DataFrame(
+    peak_rows
+)
+
+
+
+peak_table.to_csv(
+
+    os.path.join(
+
+        SAVE_DIR,
+
+        "lifespan_peak_summary.csv"
+
+    ),
+
+    index=False
+
+)
+
+
+
+print("\nPEAK SUMMARY")
+print(
+    peak_table
+)
+
+
+
+
+
+# ============================================================
+# SAVE TRAJECTORY TABLE
+# ============================================================
+
+
+rows=[]
+
+
+
+for i,age in enumerate(age_centers):
+
+
+    row={
+
+        "Age":age
+
+    }
+
+
+    for name in models:
+
+
+        row[name]=trajectory[name]["mean"][i]
+
+        row[name+"_z"]=trajectory_z[name][i]
+
+
+
+    rows.append(row)
+
+
+
+trajectory_table=pd.DataFrame(
+    rows
+)
+
+
+
+trajectory_table.to_csv(
+
+    os.path.join(
+
+        SAVE_DIR,
+
+        "lifespan_trajectory_table.csv"
+
+    ),
+
+    index=False
+
+)
+
+
+
+
+
+# ============================================================
+# FIGURE
+# ============================================================
+
+
+fig,axs=plt.subplots(
+
+    1,
+
+    2,
+
+    figsize=(16,6)
+
+)
+
+
+
+# ------------------------------------------------------------
+# RAW
+# ------------------------------------------------------------
+
+
+ax=axs[0]
+
+
+for name in models:
+
+
+    ax.plot(
+
+        age_centers,
+
+        trajectory[name]["mean"],
+
+        color=colors[name],
+
+        label=name
+
+    )
+
+
+    ax.fill_between(
+
+        age_centers,
+
+        trajectory[name]["low"],
+
+        trajectory[name]["high"],
+
+        color=colors[name],
+
+        alpha=.15
+
+    )
+
+
+
+ax.set_title(
+
+    "Raw lifespan trajectories"
+
+)
+
+
+ax.set_xlabel(
+    "Age (years)"
+)
+
+
+ax.set_ylabel(
+    "Spearman coupling / activity"
+)
+
+
+
+ax.legend(
+    frameon=False
+)
+
+
+
+
+
+# ------------------------------------------------------------
+# NORMALIZED
+# ------------------------------------------------------------
+
+
+ax=axs[1]
+
+
+
+for name in models:
+
+
+    ax.plot(
+
+        age_centers,
+
+        trajectory_z[name],
+
+        color=colors[name],
+
+        label=name
+
+    )
+
+
+    # mark strongest windows
+
+    peak=peak_table[
+
+        peak_table.Model==name
+
+    ]
+
+
+
+    for _,row in peak.iterrows():
+
+
+        ax.scatter(
+
+            row.Age_center,
+
+            row.Z_value,
+
+            color=colors[name],
+
+            s=100,
+
+            edgecolor="black",
+
+            zorder=5
+
+        )
+
+
+
+        ax.text(
+
+            row.Age_center,
+
+            row.Z_value,
+
+            str(int(row.Age_center)),
+
+            fontsize=9,
+
+            ha="center"
+
+        )
+
+
+
+
+
+ax.axhline(
+
+    0,
+
+    color="black",
+
+    linewidth=1
+
+)
+
+
+
+ax.set_title(
+
+    "Normalized lifespan dynamics"
+
+)
+
+
+
+ax.set_xlabel(
+    "Age (years)"
+)
+
+
+ax.set_ylabel(
+    "Z-score"
+)
+
+
+ax.legend(
+    frameon=False
+)
+
+
+
+
+plt.tight_layout()
+
+
+
+plt.savefig(
+
+    os.path.join(
+
+        FIG_DIR,
+
+        "lifespan_raw_and_normalized_trajectories.png"
+
+    ),
+
+    dpi=600,
+
+    bbox_inches="tight"
+
+)
+
+
+
+plt.close()
+
+
+
+print(
+    "\n✅ Lifespan analysis completed"
+)
+print(
+    "Files saved in:",
+    SAVE_DIR
+)
