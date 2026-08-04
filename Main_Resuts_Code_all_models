@@ -348,3 +348,1829 @@ if __name__=="__main__":
             plt.savefig(os.path.join(FIG_DIR,f"{model}_to_{target}.png"))
             plt.close()
     print("Scatter figures saved.")
+
+
+
+
+# ============================================================
+# BRAIN–HEART–RESPIRATION–ENERGY MODEL
+# FULL NON-PARAMETRIC SPEARMAN VERSION
+#
+# Includes:
+# - Spearman correlation coupling
+# - Spearman permutation p-values
+# - Spearman correlation matrix
+# - Spearman bootstrap mediation
+# - Bootstrap confidence intervals
+# ============================================================
+
+
+import os
+import multiprocessing
+
+import numpy as np
+import pandas as pd
+
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+from joblib import Parallel, delayed
+
+from scipy.stats import spearmanr
+
+
+
+# ============================================================
+# PARAMETERS
+# ============================================================
+
+
+NETWORK_SIZES = [
+    40,
+    80,
+    120
+]
+
+
+N_NETWORKS_PER_SIZE = 5
+
+SEEDS_PER_NETWORK = 20
+
+N_SUBJECTS_PER_SEED = 50
+
+
+
+T = 500
+
+DT = 0.05
+
+STEPS = int(
+    T / DT
+)
+
+
+
+K_BODY_VALS = [
+    0.03,
+    0.05,
+    0.07
+]
+
+
+K_ENERGY_VALS = [
+    0.03,
+    0.05,
+    0.07
+]
+
+
+
+N_BOOT = 1000
+
+N_PERM = 1000
+
+
+
+SAVE_DIR = (
+    "BrainHeartRespiration_"
+    "Spearman_NonParametric"
+)
+
+
+FIG_DIR = os.path.join(
+    SAVE_DIR,
+    "figures"
+)
+
+
+os.makedirs(
+    SAVE_DIR,
+    exist_ok=True
+)
+
+
+os.makedirs(
+    FIG_DIR,
+    exist_ok=True
+)
+
+
+
+N_CORES = multiprocessing.cpu_count()
+
+
+GLOBAL_SEED = 42
+
+
+
+# ============================================================
+# NETWORK MODELS
+# ============================================================
+
+
+def small_world(
+    N,
+    k=6,
+    p=0.2,
+    seed=None
+):
+
+    rng = np.random.default_rng(
+        seed
+    )
+
+
+    W = np.zeros(
+        (
+            N,
+            N
+        )
+    )
+
+
+    for i in range(N):
+
+        for j in range(
+            1,
+            k//2 + 1
+        ):
+
+            W[
+                i,
+                (i+j)%N
+            ] = 1
+
+
+            W[
+                i,
+                (i-j)%N
+            ] = 1
+
+
+
+    for i in range(N):
+
+        for j in range(N):
+
+            if (
+                W[i,j] == 1
+                and rng.random() < p
+            ):
+
+                W[i,j] = 0
+
+
+                new = rng.integers(
+                    N
+                )
+
+
+                while (
+                    new == i
+                    or W[i,new] == 1
+                ):
+
+                    new = rng.integers(
+                        N
+                    )
+
+
+                W[i,new] = 1
+
+
+
+    W = (
+        W + W.T
+    ) / 2
+
+
+    np.fill_diagonal(
+        W,
+        0
+    )
+
+
+    return W
+
+
+
+
+def random_network(
+    N,
+    seed=None
+):
+
+    rng = np.random.default_rng(
+        seed
+    )
+
+
+    W = rng.random(
+        (
+            N,
+            N
+        )
+    )
+
+
+    W = (
+        W + W.T
+    ) / 2
+
+
+    W[
+        W < 0.9
+    ] = 0
+
+
+    np.fill_diagonal(
+        W,
+        0
+    )
+
+
+    return W
+
+
+
+
+def lattice_network(
+    N,
+    k=6
+):
+
+    W = np.zeros(
+        (
+            N,
+            N
+        )
+    )
+
+
+    for i in range(N):
+
+        for j in range(
+            1,
+            k//2 + 1
+        ):
+
+            W[
+                i,
+                (i+j)%N
+            ] = 1
+
+
+            W[
+                i,
+                (i-j)%N
+            ] = 1
+
+
+    return W
+
+
+
+
+def normalize_connectivity(
+    W
+):
+
+    eig = np.linalg.eigvals(
+        W
+    )
+
+
+    return (
+        W /
+        np.max(
+            np.abs(eig)
+        )
+    )
+
+
+
+
+def graph_laplacian(
+    W
+):
+
+    return (
+        np.diag(
+            W.sum(axis=1)
+        )
+        -
+        W
+    )
+
+
+
+# ============================================================
+# HEART AND RESPIRATION OSCILLATORS
+# ============================================================
+
+
+def simulate_body(
+    seed
+):
+
+    rng = np.random.default_rng(
+        seed
+    )
+
+
+    heart_phase = 0
+
+    respiration_phase = 0
+
+
+    heart_frequency = 1.2
+
+    respiration_frequency = 0.25
+
+
+
+    heart = np.zeros(
+        STEPS
+    )
+
+
+    respiration = np.zeros(
+        STEPS
+    )
+
+
+
+    for t in range(STEPS):
+
+
+        heart_phase += (
+            2*np.pi
+            *
+            heart_frequency
+            *
+            DT
+            +
+            rng.normal(
+                0,
+                0.01
+            )
+        )
+
+
+        respiration_phase += (
+            2*np.pi
+            *
+            respiration_frequency
+            *
+            DT
+            +
+            rng.normal(
+                0,
+                0.005
+            )
+        )
+
+
+
+        heart[t] = np.sin(
+            heart_phase
+        )
+
+
+        respiration[t] = np.sin(
+            respiration_phase
+        )
+
+
+
+    return (
+        heart,
+        respiration
+    )
+
+
+
+# ============================================================
+# AGE MODULATION
+# ============================================================
+
+
+def age_modulation(
+    age,
+    rng
+):
+
+    G = (
+        0.6
+        *
+        np.exp(
+            -((age-40)/30)**2
+        )
+        +
+        rng.normal(
+            0,
+            0.05
+        )
+    )
+
+
+    noise = (
+        0.02
+        +
+        0.0004*age
+        +
+        rng.normal(
+            0,
+            0.003
+        )
+    )
+
+
+    decay = (
+        0.02
+        +
+        0.0003*age
+    )
+
+
+    return (
+        G,
+        noise,
+        decay
+    )
+
+
+
+# ============================================================
+# BRAIN–ENERGY DYNAMICS
+# ============================================================
+
+
+def simulate_brain_energy(
+    L,
+    G,
+    noise,
+    heart,
+    respiration,
+    decay,
+    K_BODY,
+    K_ENERGY,
+    seed
+):
+
+    rng = np.random.default_rng(
+        seed
+    )
+
+
+    N = L.shape[0]
+
+
+    z = (
+        rng.normal(size=N)
+        +
+        1j*rng.normal(size=N)
+    )
+
+
+    omega = (
+        rng.uniform(
+            8,
+            12,
+            N
+        )
+        *
+        2*np.pi
+        /
+        100
+    )
+
+
+    E = 1
+
+
+    power = np.zeros(
+        (
+            STEPS,
+            N
+        )
+    )
+
+
+    energy = np.zeros(
+        STEPS
+    )
+
+
+    for t in range(STEPS):
+
+
+        brain_power = np.mean(
+            np.abs(z)**2
+        )
+
+
+        production = (
+            0.4
+            +
+            0.15*heart[t]
+            +
+            0.15*respiration[t]
+        )
+
+
+        consumption = (
+            0.05
+            *
+            brain_power
+        )
+
+
+        E += (
+            production
+            -
+            consumption
+            -
+            decay*E
+        ) * DT
+
+
+        E = max(
+            E,
+            0
+        )
+
+
+        forcing = (
+            K_BODY*heart[t]
+            +
+            K_BODY*respiration[t]
+            +
+            K_ENERGY*E
+        )
+
+
+        coupling = (
+            -G*(L@z)
+        )
+
+
+        intrinsic = (
+            (
+                0.02
+                +
+                1j*omega
+                -
+                np.abs(z)**2
+            )
+            *
+            z
+        )
+
+
+        noise_term = (
+            noise
+            *
+            np.sqrt(DT)
+            *
+            (
+                rng.normal(size=N)
+                +
+                1j*rng.normal(size=N)
+            )
+        )
+
+
+        dz = (
+            intrinsic
+            +
+            coupling
+            +
+            forcing*z
+            +
+            noise_term
+        )
+
+
+        z += dz*DT
+
+
+        power[t] = np.abs(z)**2
+
+        energy[t] = E
+
+
+
+    return (
+        power,
+        energy
+    )
+# ============================================================
+# NON-PARAMETRIC SPEARMAN METRICS
+# ============================================================
+
+
+def spearman_metric(
+    x,
+    y
+):
+
+    if (
+        np.std(x) == 0
+        or np.std(y) == 0
+    ):
+        return np.nan
+
+
+    rho, _ = spearmanr(
+        x,
+        y
+    )
+
+    return rho
+
+
+
+
+def free_energy_metric(
+    power
+):
+
+    mean_power = np.mean(
+        power,
+        axis=1
+    )
+
+    return np.mean(
+        np.diff(mean_power)**2
+    )
+
+
+
+
+def energy_metrics(
+    E
+):
+
+    return (
+
+        np.std(E),
+
+        np.mean(E)
+
+    )
+
+
+
+
+def cognition_energy(
+    E,
+    G
+):
+
+    return (
+
+        0.5*G
+
+        +
+
+        0.5*np.mean(E)
+
+        -
+
+        0.3*np.std(E)
+
+    )
+
+
+
+
+def cognition_independent(
+    heart,
+    rng
+):
+
+    return (
+
+        np.mean(heart)
+
+        +
+
+        rng.normal(
+            0,
+            0.1
+        )
+
+    )
+
+
+
+# ============================================================
+# FULL NON-PARAMETRIC SPEARMAN BOOTSTRAP MEDIATION
+# ============================================================
+
+
+def spearman_bootstrap_mediation(
+    X,
+    M,
+    Y,
+    n_boot=1000,
+    seed=42
+):
+
+
+    rng = np.random.default_rng(
+        seed
+    )
+
+
+    X = np.asarray(X)
+
+    M = np.asarray(M)
+
+    Y = np.asarray(Y)
+
+
+
+    n = len(X)
+
+
+    indirect_effects = []
+
+
+
+    for _ in range(n_boot):
+
+
+        idx = rng.integers(
+            0,
+            n,
+            n
+        )
+
+
+        Xb = X[idx]
+
+        Mb = M[idx]
+
+        Yb = Y[idx]
+
+
+
+        # non-parametric paths
+
+        a, _ = spearmanr(
+            Xb,
+            Mb
+        )
+
+
+        b, _ = spearmanr(
+            Mb,
+            Yb
+        )
+
+
+
+        indirect = (
+            a*b
+        )
+
+
+        indirect_effects.append(
+            indirect
+        )
+
+
+
+    indirect_effects = np.asarray(
+        indirect_effects
+    )
+
+
+
+    return {
+
+
+        "indirect_mean":
+            np.mean(
+                indirect_effects
+            ),
+
+
+        "CI_lower_2.5":
+            np.percentile(
+                indirect_effects,
+                2.5
+            ),
+
+
+        "CI_upper_97.5":
+            np.percentile(
+                indirect_effects,
+                97.5
+            ),
+
+
+        "bootstrap_std":
+            np.std(
+                indirect_effects
+            )
+
+    }
+
+
+
+
+# ============================================================
+# SUBJECT SIMULATION
+# ============================================================
+
+
+def simulate_subject(
+    job
+):
+
+
+    (
+        W,
+        L,
+        network_id,
+        seed,
+        subject,
+        K_BODY,
+        K_ENERGY
+
+    ) = job
+
+
+
+
+    rng = np.random.default_rng(
+        seed*100000 + subject
+    )
+
+
+
+    age = rng.uniform(
+        20,
+        80
+    )
+
+
+
+    G, noise, decay = age_modulation(
+        age,
+        rng
+    )
+
+
+
+    heart, respiration = simulate_body(
+        seed + subject
+    )
+
+
+
+    power, E = simulate_brain_energy(
+        L,
+        G,
+        noise,
+        heart,
+        respiration,
+        decay,
+        K_BODY,
+        K_ENERGY,
+        seed + subject
+    )
+
+
+
+    brain = np.mean(
+        power,
+        axis=1
+    )
+
+
+
+
+    # -------------------------------
+    # Spearman coupling
+    # -------------------------------
+
+
+    brain_heart = spearman_metric(
+        brain,
+        heart
+    )
+
+
+    brain_resp = spearman_metric(
+        brain,
+        respiration
+    )
+
+
+    heart_resp = spearman_metric(
+        heart,
+        respiration
+    )
+
+
+
+    brain_body_model = np.sqrt(
+
+        (
+
+            brain_heart**2
+
+            +
+
+            brain_resp**2
+
+            +
+
+            heart_resp**2
+
+        )
+
+        /
+
+        3
+
+    )
+
+
+
+    active_inference = free_energy_metric(
+        power
+    )
+
+
+
+    energy_std, energy_mean = energy_metrics(
+        E
+    )
+
+
+
+    cog_energy = cognition_energy(
+        E,
+        G
+    )
+
+
+
+    cog_independent = cognition_independent(
+        heart,
+        rng
+    )
+
+
+
+    return {
+
+
+        "NetworkID":
+            network_id,
+
+
+        "Seed":
+            seed,
+
+
+        "Subject":
+            subject,
+
+
+        "Age":
+            age,
+
+
+
+        "BrainHeart_Spearman":
+            brain_heart,
+
+
+        "BrainResp_Spearman":
+            brain_resp,
+
+
+        "HeartResp_Spearman":
+            heart_resp,
+
+
+
+        "BrainBody_Spearman_Model":
+            brain_body_model,
+
+
+
+        "ActiveInference":
+            active_inference,
+
+
+
+        "EnergyEfficiency":
+            energy_mean,
+
+
+
+        "EnergyVariability":
+            energy_std,
+
+
+
+        "CogEnergy":
+            cog_energy,
+
+
+
+        "CogIndependent":
+            cog_independent
+
+    }
+
+
+
+
+# ============================================================
+# JOB GENERATION
+# ============================================================
+
+
+def create_jobs():
+
+
+    jobs = []
+
+
+    network_counter = 0
+
+
+
+    for N in NETWORK_SIZES:
+
+
+
+        for topology in [
+
+            "smallworld",
+
+            "random",
+
+            "lattice"
+
+        ]:
+
+
+
+            for i in range(
+                N_NETWORKS_PER_SIZE
+            ):
+
+
+
+                if topology == "smallworld":
+
+
+                    W = small_world(
+                        N,
+                        seed=i
+                    )
+
+
+
+                elif topology == "random":
+
+
+                    W = random_network(
+                        N,
+                        seed=i
+                    )
+
+
+
+                else:
+
+
+                    W = lattice_network(
+                        N
+                    )
+
+
+
+                W = normalize_connectivity(
+                    W
+                )
+
+
+
+                L = graph_laplacian(
+                    W
+                )
+
+
+
+                for Kb in K_BODY_VALS:
+
+
+                    for Ke in K_ENERGY_VALS:
+
+
+
+                        for seed in range(
+                            SEEDS_PER_NETWORK
+                        ):
+
+
+
+                            for subject in range(
+                                N_SUBJECTS_PER_SEED
+                            ):
+
+
+
+                                jobs.append(
+
+                                    (
+
+                                        W,
+
+                                        L,
+
+                                        network_counter,
+
+                                        seed,
+
+                                        subject,
+
+                                        Kb,
+
+                                        Ke
+
+                                    )
+
+                                )
+
+
+
+                network_counter += 1
+
+
+
+    return jobs
+
+# ============================================================
+# RUN SIMULATION
+# ============================================================
+
+
+if __name__ == "__main__":
+
+
+    print(
+        "Creating jobs..."
+    )
+
+
+    jobs = create_jobs()
+
+
+
+    print(
+        "Total jobs:",
+        len(jobs)
+    )
+
+
+
+    results = Parallel(
+        n_jobs=N_CORES,
+        backend="loky",
+        verbose=10
+    )(
+        delayed(simulate_subject)(job)
+        for job in jobs
+    )
+
+
+
+    df = pd.DataFrame(
+        results
+    )
+
+
+
+    dataset_path = os.path.join(
+        SAVE_DIR,
+        "dataset_full_spearman.csv"
+    )
+
+
+
+    df.to_csv(
+        dataset_path,
+        index=False
+    )
+
+
+
+    print(
+        "Dataset saved:"
+    )
+
+    print(
+        dataset_path
+    )
+
+
+
+
+    # ========================================================
+    # SPEARMAN CORRELATION MATRIX
+    # ========================================================
+
+
+    correlation_variables = [
+
+
+        "BrainHeart_Spearman",
+
+
+        "BrainResp_Spearman",
+
+
+        "HeartResp_Spearman",
+
+
+        "BrainBody_Spearman_Model",
+
+
+        "EnergyEfficiency",
+
+
+        "EnergyVariability",
+
+
+        "ActiveInference",
+
+
+        "CogEnergy",
+
+
+        "CogIndependent"
+
+
+    ]
+
+
+
+    spearman_matrix = (
+
+        df[correlation_variables]
+
+        .corr(
+            method="spearman"
+        )
+
+    )
+
+
+
+    spearman_matrix_file = os.path.join(
+
+        SAVE_DIR,
+
+        "spearman_correlation_matrix.csv"
+
+    )
+
+
+
+    spearman_matrix.to_csv(
+        spearman_matrix_file
+    )
+
+
+
+    print(
+        "Spearman correlation matrix saved."
+    )
+
+
+
+
+
+    # ========================================================
+    # SPEARMAN PERMUTATION TESTS
+    # ========================================================
+
+
+
+    predictors = [
+
+
+        "BrainHeart_Spearman",
+
+
+        "BrainResp_Spearman",
+
+
+        "HeartResp_Spearman",
+
+
+        "BrainBody_Spearman_Model",
+
+
+        "ActiveInference",
+
+
+        "EnergyEfficiency"
+
+
+    ]
+
+
+
+    targets = [
+
+
+        "CogEnergy",
+
+
+        "CogIndependent"
+
+
+    ]
+
+
+
+    permutation_results = []
+
+
+
+    rng = np.random.default_rng(
+        GLOBAL_SEED
+    )
+
+
+
+    for target in targets:
+
+
+
+        y = df[target].values
+
+
+
+        for predictor in predictors:
+
+
+
+            x = df[predictor].values
+
+
+
+
+            observed_rho, _ = spearmanr(
+                x,
+                y
+            )
+
+
+
+            null_distribution = []
+
+
+
+            for _ in range(
+                N_PERM
+            ):
+
+
+
+                y_shuffle = rng.permutation(
+                    y
+                )
+
+
+
+                rho_null, _ = spearmanr(
+                    x,
+                    y_shuffle
+                )
+
+
+
+                null_distribution.append(
+                    rho_null
+                )
+
+
+
+            null_distribution = np.asarray(
+                null_distribution
+            )
+
+
+
+            p_value = np.mean(
+
+                np.abs(null_distribution)
+
+                >=
+
+                np.abs(observed_rho)
+
+            )
+
+
+
+            permutation_results.append(
+
+                {
+
+
+                    "Predictor":
+                        predictor,
+
+
+                    "Target":
+                        target,
+
+
+                    "Spearman_rho":
+                        observed_rho,
+
+
+                    "Permutation_p":
+                        p_value
+
+                }
+
+            )
+
+
+
+            print(
+
+                predictor,
+
+                "->",
+
+                target,
+
+                "rho=",
+
+                round(
+                    observed_rho,
+                    4
+                ),
+
+                "p=",
+
+                round(
+                    p_value,
+                    5
+                )
+
+            )
+
+
+
+    permutation_df = pd.DataFrame(
+        permutation_results
+    )
+
+
+
+    permutation_df.to_csv(
+
+        os.path.join(
+
+            SAVE_DIR,
+
+            "spearman_permutation_results.csv"
+
+        ),
+
+        index=False
+
+    )
+
+
+
+    print(
+        "Permutation testing complete."
+    )
+
+
+
+    # ========================================================
+    # SPEARMAN CORRELATION HEATMAP
+    # ========================================================
+
+
+
+    plt.figure(
+        figsize=(12,10)
+    )
+
+
+
+    sns.heatmap(
+
+        spearman_matrix,
+
+        annot=True,
+
+        fmt=".2f",
+
+        cmap="coolwarm",
+
+        center=0,
+
+        square=True
+
+    )
+
+
+
+    plt.title(
+
+        "Brain–Heart–Respiration\n"
+        "Spearman Correlation Matrix"
+
+    )
+
+
+
+    plt.tight_layout()
+
+
+
+    plt.savefig(
+
+        os.path.join(
+
+            FIG_DIR,
+
+            "Spearman_Correlation_Matrix.png"
+
+        ),
+
+        dpi=300
+
+    )
+
+
+    plt.close()
+
+
+
+    print(
+        "Correlation figure saved."
+    )
+# ============================================================
+# SPEARMAN BOOTSTRAP MEDIATION ANALYSIS
+# ============================================================
+
+
+    mediation_results = []
+
+
+
+    mediator = "EnergyEfficiency"
+
+
+
+    for target in targets:
+
+
+
+        for predictor in predictors:
+
+
+
+            print(
+                "Running mediation:",
+                predictor,
+                "->",
+                mediator,
+                "->",
+                target
+            )
+
+
+
+            result = spearman_bootstrap_mediation(
+
+                X=df[predictor].values,
+
+                M=df[mediator].values,
+
+                Y=df[target].values,
+
+                n_boot=N_BOOT,
+
+                seed=GLOBAL_SEED
+
+            )
+
+
+
+            mediation_results.append(
+
+                {
+
+
+                    "Predictor":
+
+                        predictor,
+
+
+                    "Mediator":
+
+                        mediator,
+
+
+                    "Outcome":
+
+                        target,
+
+
+                    "Indirect_effect_mean":
+
+                        result["indirect_mean"],
+
+
+                    "Bootstrap_CI_lower":
+
+                        result["CI_lower_2.5"],
+
+
+                    "Bootstrap_CI_upper":
+
+                        result["CI_upper_97.5"],
+
+
+                    "Bootstrap_SD":
+
+                        result["bootstrap_std"]
+
+                }
+
+            )
+
+
+
+            print(
+
+                "Indirect effect:",
+
+                round(
+                    result["indirect_mean"],
+                    5
+                ),
+
+                "95% CI:",
+
+                (
+
+                    round(
+                        result["CI_lower_2.5"],
+                        5
+                    ),
+
+                    round(
+                        result["CI_upper_97.5"],
+                        5
+                    )
+
+                )
+
+            )
+
+
+
+    mediation_df = pd.DataFrame(
+        mediation_results
+    )
+
+
+
+    mediation_file = os.path.join(
+
+        SAVE_DIR,
+
+        "spearman_bootstrap_mediation_results.csv"
+
+    )
+
+
+
+    mediation_df.to_csv(
+
+        mediation_file,
+
+        index=False
+
+    )
+
+
+
+    print(
+        "Bootstrap mediation saved."
+    )
+
+
+
+    # ========================================================
+    # OPTIONAL SUMMARY TABLE
+    # ========================================================
+
+
+    summary = {
+
+
+        "Number_of_subjects":
+
+            len(df),
+
+
+        "Correlation_method":
+
+            "Spearman rank correlation",
+
+
+        "Permutation_tests":
+
+            N_PERM,
+
+
+        "Bootstrap_iterations":
+
+            N_BOOT,
+
+
+        "Mediation_method":
+
+            "Spearman bootstrap indirect effect",
+
+
+        "Confidence_interval":
+
+            "Percentile 95% CI"
+
+
+    }
+
+
+
+    summary_df = pd.DataFrame(
+
+        summary,
+
+        index=[0]
+
+    )
+
+
+
+    summary_df.to_csv(
+
+        os.path.join(
+
+            SAVE_DIR,
+
+            "analysis_summary.csv"
+
+        ),
+
+        index=False
+
+    )
+
+
+
+    print(
+        "================================================"
+    )
+
+    print(
+        "COMPLETE NON-PARAMETRIC SPEARMAN PIPELINE FINISHED"
+    )
+
+    print(
+        "================================================"
+    )
+
+    print(
+        "Results saved in:"
+    )
+
+    print(
+        SAVE_DIR
+    )
+
