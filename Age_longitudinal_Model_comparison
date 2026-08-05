@@ -1,0 +1,2539 @@
+# ============================================================
+# AGE-BIN PREDICTIVE COMPARISON ANALYSIS
+#
+# Brain-Heart
+# Brain-Respiration
+# Heart-Respiration
+# Brain-Body
+# Global Brain Signal
+# Active Inference
+# Energy Efficiency
+#
+# Targets:
+#       CogEnergy
+#       CogIndependent
+#
+# Model:
+#       Ridge regression
+#       5-fold cross validation
+#       Bootstrap confidence intervals
+#
+# ============================================================
+
+
+import os
+import warnings
+
+import numpy as np
+import pandas as pd
+
+
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+
+
+from sklearn.pipeline import Pipeline
+
+from sklearn.preprocessing import StandardScaler
+
+from sklearn.linear_model import Ridge
+
+from sklearn.model_selection import KFold
+
+from sklearn.metrics import (
+    r2_score,
+    mean_squared_error,
+    mean_absolute_error
+)
+
+from sklearn.base import clone
+
+
+
+warnings.filterwarnings(
+    "ignore"
+)
+
+
+
+# ============================================================
+# DIRECTORIES
+# ============================================================
+
+
+SAVE_DIR = (
+    "BrainBodyEnergy_Predictive_Comparison"
+)
+
+
+FIG_DIR = os.path.join(
+    SAVE_DIR,
+    "figures"
+)
+
+
+
+os.makedirs(
+    SAVE_DIR,
+    exist_ok=True
+)
+
+
+os.makedirs(
+    FIG_DIR,
+    exist_ok=True
+)
+
+
+
+sns.set(
+    style="whitegrid"
+)
+
+
+
+# ============================================================
+# LOAD DATA
+# ============================================================
+
+
+DATA_PATH = (
+
+    "BrainHeartRespiration_"
+    "Spearman_NonParametric/"
+    "dataset_full_spearman.csv"
+
+)
+
+
+
+if not os.path.exists(DATA_PATH):
+
+    raise FileNotFoundError(
+
+        "\nDataset not found:\n"
+        + DATA_PATH
+        +
+        "\n\nGenerate the simulation dataset first."
+
+    )
+
+
+
+df = pd.read_csv(
+    DATA_PATH
+)
+
+
+
+print(
+    "Subjects loaded:",
+    len(df)
+)
+
+
+
+# ============================================================
+# CORRECT VARIABLES FROM SIMULATION
+# ============================================================
+
+
+required_columns = [
+
+    "Age",
+
+    # physiological coupling
+
+    "BrainHeart_Spearman",
+
+    "BrainResp_Spearman",
+
+    "HeartResp_Spearman",
+
+    "BrainBody_Spearman_Model",
+
+
+    # brain dynamics
+
+    "ActiveInference",
+
+    "EnergyEfficiency",
+
+
+    # cognitive outputs
+
+    "CogEnergy",
+
+    "CogIndependent"
+
+]
+
+
+
+missing = [
+
+    col
+
+    for col in required_columns
+
+    if col not in df.columns
+
+]
+
+
+
+if len(missing)>0:
+
+
+    raise ValueError(
+
+        "\nMissing variables:\n"
+
+        +
+
+        str(missing)
+
+        +
+
+        "\n\nAvailable columns:\n"
+
+        +
+
+        str(
+            df.columns.tolist()
+        )
+
+    )
+
+
+
+# ============================================================
+# GLOBAL SIGNAL FIX
+#
+# If GlobalSignal was already saved:
+# use it.
+#
+# Otherwise reconstruct a proxy from
+# available brain-body coupling.
+# ============================================================
+
+
+
+if "GlobalSignal" not in df.columns:
+
+
+    print(
+        "GlobalSignal not found."
+    )
+
+
+    print(
+        "Creating GlobalSignal proxy."
+    )
+
+
+    df["GlobalSignal"] = (
+
+        df["BrainBody_Spearman_Model"]
+
+        *
+
+        df["EnergyEfficiency"]
+
+    )
+
+
+
+else:
+
+
+    print(
+        "GlobalSignal detected."
+    )
+
+
+
+
+# ============================================================
+# PREDICTOR MODELS
+# ============================================================
+
+
+predictor_models = {
+
+
+    "BrainHeart":
+
+    [
+
+        "BrainHeart_Spearman"
+
+    ],
+
+
+
+    "BrainRespiration":
+
+    [
+
+        "BrainResp_Spearman"
+
+    ],
+
+
+
+    "HeartRespiration":
+
+    [
+
+        "HeartResp_Spearman"
+
+    ],
+
+
+
+    "BrainBody":
+
+    [
+
+        "BrainBody_Spearman_Model"
+
+    ],
+
+
+
+    "GlobalSignal":
+
+    [
+
+        "GlobalSignal"
+
+    ],
+
+
+
+    "ActiveInference":
+
+    [
+
+        "ActiveInference"
+
+    ],
+
+
+
+    "EnergyEfficiency":
+
+    [
+
+        "EnergyEfficiency"
+
+    ],
+
+
+
+    "Physiology_Integrated":
+
+    [
+
+        "BrainHeart_Spearman",
+
+        "BrainResp_Spearman",
+
+        "HeartResp_Spearman"
+
+    ],
+
+
+
+    "Full_BrainBody_ActiveInference":
+
+    [
+
+        "BrainHeart_Spearman",
+
+        "BrainResp_Spearman",
+
+        "HeartResp_Spearman",
+
+        "BrainBody_Spearman_Model",
+
+        "GlobalSignal",
+
+        "ActiveInference",
+
+        "EnergyEfficiency"
+
+    ]
+
+}
+
+
+
+# ============================================================
+# COLORS
+# ============================================================
+
+
+model_colors = {
+
+
+"BrainHeart":
+
+"#1f77b4",
+
+
+"BrainRespiration":
+
+"#2ca02c",
+
+
+"HeartRespiration":
+
+"#17becf",
+
+
+"BrainBody":
+
+"#d62728",
+
+
+"GlobalSignal":
+
+"#9467bd",
+
+
+"ActiveInference":
+
+"#ff7f0e",
+
+
+"EnergyEfficiency":
+
+"#8c564b",
+
+
+"Physiology_Integrated":
+
+"#e377c2",
+
+
+"Full_BrainBody_ActiveInference":
+
+"black"
+
+}
+
+
+
+# ============================================================
+# OUTCOMES
+# ============================================================
+
+
+outcomes = [
+
+    "CogEnergy",
+
+    "CogIndependent"
+
+]
+
+
+
+# ============================================================
+# AGE BINNING
+# ============================================================
+
+
+age_bins = np.arange(
+
+    20,
+
+    85,
+
+    5
+
+)
+
+
+
+df["Age_bin"] = pd.cut(
+
+    df["Age"],
+
+    bins=age_bins,
+
+    include_lowest=True
+
+)
+
+
+
+valid_bins = sorted(
+
+    df["Age_bin"]
+
+    .dropna()
+
+    .unique(),
+
+    key=lambda x:x.mid
+
+)
+
+
+
+age_centers = np.array(
+
+    [
+
+        b.mid
+
+        for b in valid_bins
+
+    ]
+
+)
+
+
+
+print(
+    "Age bins:",
+    age_centers
+)
+
+
+
+# ============================================================
+# MACHINE LEARNING PIPELINE
+# ============================================================
+
+
+ridge_model = Pipeline(
+
+    [
+
+        (
+
+        "scaler",
+
+        StandardScaler()
+
+        ),
+
+
+        (
+
+        "ridge",
+
+        Ridge(
+
+            alpha=1.0
+
+        )
+
+        )
+
+    ]
+
+)
+
+
+
+print(
+    "Predictive model setup completed."
+)
+
+# ============================================================
+# ROBUST CROSS-VALIDATED PREDICTION FUNCTION
+# ============================================================
+
+
+def evaluate_model(
+        data,
+        predictors,
+        outcome,
+        n_boot=500,
+        seed=42
+):
+
+
+    clean = data.dropna(
+        subset=predictors + [outcome]
+    )
+
+
+
+    N = len(clean)
+
+
+
+    if N < 20:
+
+        return {
+
+            "R2": np.nan,
+
+            "CI_low": np.nan,
+
+            "CI_high": np.nan,
+
+            "RMSE": np.nan,
+
+            "MAE": np.nan,
+
+            "N": N
+
+        }
+
+
+
+    X = clean[predictors].values
+
+    y = clean[outcome].values
+
+
+
+    cv = KFold(
+
+        n_splits=5,
+
+        shuffle=True,
+
+        random_state=seed
+
+    )
+
+
+
+    r2_scores = []
+
+    rmse_scores = []
+
+    mae_scores = []
+
+
+
+    # --------------------------------------------------------
+    # Cross validation
+    # --------------------------------------------------------
+
+
+    for train, test in cv.split(X):
+
+
+        model = clone(
+            ridge_model
+        )
+
+
+        model.fit(
+
+            X[train],
+
+            y[train]
+
+        )
+
+
+
+        pred = model.predict(
+            X[test]
+        )
+
+
+
+        r2 = r2_score(
+
+            y[test],
+
+            pred,
+
+            force_finite=False
+
+        )
+
+
+
+        rmse = np.sqrt(
+
+            mean_squared_error(
+
+                y[test],
+
+                pred
+
+            )
+
+        )
+
+
+        mae = mean_absolute_error(
+
+            y[test],
+
+            pred
+
+        )
+
+
+
+        r2_scores.append(
+            r2
+        )
+
+
+        rmse_scores.append(
+            rmse
+        )
+
+
+        mae_scores.append(
+            mae
+        )
+
+
+
+    real_r2 = np.nanmean(
+        r2_scores
+    )
+
+
+    real_rmse = np.nanmean(
+        rmse_scores
+    )
+
+
+    real_mae = np.nanmean(
+        mae_scores
+    )
+
+
+
+    # --------------------------------------------------------
+    # Bootstrap CI
+    # --------------------------------------------------------
+
+
+    rng = np.random.default_rng(
+        seed
+    )
+
+
+    boot_scores = []
+
+
+
+    for _ in range(n_boot):
+
+
+        idx = rng.choice(
+
+            np.arange(N),
+
+            size=N,
+
+            replace=True
+
+        )
+
+
+        Xb = X[idx]
+
+        yb = y[idx]
+
+
+
+        fold_scores = []
+
+
+
+        for train, test in cv.split(Xb):
+
+
+            model = clone(
+                ridge_model
+            )
+
+
+            model.fit(
+
+                Xb[train],
+
+                yb[train]
+
+            )
+
+
+
+            pred = model.predict(
+                Xb[test]
+            )
+
+
+
+            score = r2_score(
+
+                yb[test],
+
+                pred,
+
+                force_finite=False
+
+            )
+
+
+            fold_scores.append(
+                score
+            )
+
+
+
+        boot_scores.append(
+
+            np.nanmean(
+                fold_scores
+            )
+
+        )
+
+
+
+    boot_scores = np.asarray(
+        boot_scores
+    )
+
+
+
+    CI = np.nanpercentile(
+
+        boot_scores,
+
+        [
+
+            2.5,
+
+            97.5
+
+        ]
+
+    )
+
+
+
+    return {
+
+
+        "R2":
+
+            real_r2,
+
+
+        "CI_low":
+
+            CI[0],
+
+
+        "CI_high":
+
+            CI[1],
+
+
+        "RMSE":
+
+            real_rmse,
+
+
+        "MAE":
+
+            real_mae,
+
+
+        "N":
+
+            N
+
+    }
+
+
+
+
+
+# ============================================================
+# STANDARDIZED BETAS
+# ============================================================
+
+
+def standardized_betas(
+
+        data,
+
+        predictors,
+
+        outcome
+
+):
+
+
+    clean = data.dropna(
+
+        subset=predictors+[outcome]
+
+    )
+
+
+    if len(clean)<20:
+
+
+        return [
+
+            np.nan
+
+            for _ in predictors
+
+        ]
+
+
+
+    X = StandardScaler().fit_transform(
+
+        clean[predictors]
+
+    )
+
+
+
+    y = StandardScaler().fit_transform(
+
+        clean[[outcome]]
+
+    ).ravel()
+
+
+
+    model = Ridge(
+
+        alpha=1.0
+
+    )
+
+
+    model.fit(
+
+        X,
+
+        y
+
+    )
+
+
+
+    return model.coef_
+
+
+
+
+
+# ============================================================
+# RUN AGE-BIN PREDICTION
+# ============================================================
+
+
+prediction_results = []
+
+beta_results = []
+
+
+
+for outcome in outcomes:
+
+
+    print(
+
+        "\n================================"
+
+    )
+
+    print(
+
+        "Outcome:",
+
+        outcome
+
+    )
+
+    print(
+
+        "================================"
+
+    )
+
+
+
+    for age_bin in valid_bins:
+
+
+
+        group = df[
+
+            df["Age_bin"]
+
+            ==
+
+            age_bin
+
+        ]
+
+
+
+        age = age_bin.mid
+
+
+
+        if len(group)<20:
+
+            continue
+
+
+
+        print(
+
+            "Age:",
+
+            age,
+
+            "N:",
+
+            len(group)
+
+        )
+
+
+
+        for model_name, predictors in predictor_models.items():
+
+
+
+            performance = evaluate_model(
+
+                group,
+
+                predictors,
+
+                outcome
+
+            )
+
+
+
+            prediction_results.append(
+
+                {
+
+
+                "Outcome":
+
+                    outcome,
+
+
+                "Age":
+
+                    age,
+
+
+                "Model":
+
+                    model_name,
+
+
+                **performance
+
+
+                }
+
+            )
+
+
+
+
+            # -----------------------------
+            # coefficients
+            # -----------------------------
+
+
+            betas = standardized_betas(
+
+                group,
+
+                predictors,
+
+                outcome
+
+            )
+
+
+
+            for predictor,beta in zip(
+
+                    predictors,
+
+                    betas
+
+            ):
+
+
+                beta_results.append(
+
+                    {
+
+
+                    "Outcome":
+
+                        outcome,
+
+
+                    "Age":
+
+                        age,
+
+
+                    "Model":
+
+                        model_name,
+
+
+                    "Predictor":
+
+                        predictor,
+
+
+                    "Beta":
+
+                        beta
+
+
+                    }
+
+                )
+
+
+
+
+
+# ============================================================
+# SAVE TABLES
+# ============================================================
+
+
+prediction_df = pd.DataFrame(
+
+    prediction_results
+
+)
+
+
+
+beta_df = pd.DataFrame(
+
+    beta_results
+
+)
+
+
+
+if len(prediction_df)==0:
+
+
+    raise RuntimeError(
+
+        "No prediction results generated. "
+        "Check age bins and variables."
+
+    )
+
+
+
+prediction_file = os.path.join(
+
+    SAVE_DIR,
+
+    "AgeBin_predictive_performance.csv"
+
+)
+
+
+
+beta_file = os.path.join(
+
+    SAVE_DIR,
+
+    "AgeBin_standardized_betas.csv"
+
+)
+
+
+
+prediction_df.to_csv(
+
+    prediction_file,
+
+    index=False
+
+)
+
+
+
+beta_df.to_csv(
+
+    beta_file,
+
+    index=False
+
+)
+
+
+
+print(
+
+    "Prediction table saved:",
+
+    prediction_file
+
+)
+
+
+print(
+
+    "Beta table saved:",
+
+    beta_file
+
+)
+
+# ============================================================
+# MODEL RANKING ACROSS LIFESPAN
+# ============================================================
+
+
+ranking_rows = []
+
+
+
+for outcome in outcomes:
+
+
+    subset = prediction_df[
+
+        prediction_df["Outcome"]
+
+        ==
+
+        outcome
+
+    ]
+
+
+
+    ranking = (
+
+        subset
+
+        .groupby(
+
+            "Model"
+
+        )
+
+        ["R2"]
+
+        .mean()
+
+        .sort_values(
+
+            ascending=False
+
+        )
+
+    )
+
+
+
+    for rank,(model,r2) in enumerate(
+
+            ranking.items(),
+
+            start=1
+
+    ):
+
+
+        ranking_rows.append(
+
+            {
+
+
+            "Outcome":
+
+                outcome,
+
+
+            "Rank":
+
+                rank,
+
+
+            "Model":
+
+                model,
+
+
+            "Mean_Lifespan_R2":
+
+                r2
+
+
+            }
+
+        )
+
+
+
+ranking_df = pd.DataFrame(
+
+    ranking_rows
+
+)
+
+
+
+ranking_file = os.path.join(
+
+    SAVE_DIR,
+
+    "Model_ranking_lifespan.csv"
+
+)
+
+
+
+ranking_df.to_csv(
+
+    ranking_file,
+
+    index=False
+
+)
+
+
+
+print(
+
+    "\nModel ranking saved"
+
+)
+
+print(
+
+    ranking_df
+
+)
+
+
+
+
+# ============================================================
+# BEST MODEL BY AGE BIN
+# ============================================================
+
+
+winner_rows = []
+
+
+
+for outcome in outcomes:
+
+
+    subset = prediction_df[
+
+        prediction_df["Outcome"]
+
+        ==
+
+        outcome
+
+    ]
+
+
+
+    for age in sorted(
+
+        subset["Age"].unique()
+
+    ):
+
+
+        age_data = subset[
+
+            subset["Age"]
+
+            ==
+
+            age
+
+        ]
+
+
+
+        if len(age_data)==0:
+
+            continue
+
+
+
+        best = age_data.loc[
+
+            age_data["R2"].idxmax()
+
+        ]
+
+
+
+        winner_rows.append(
+
+            {
+
+
+            "Outcome":
+
+                outcome,
+
+
+            "Age":
+
+                age,
+
+
+            "Best_Model":
+
+                best["Model"],
+
+
+            "Best_R2":
+
+                best["R2"]
+
+
+            }
+
+        )
+
+
+
+winner_df = pd.DataFrame(
+
+    winner_rows
+
+)
+
+
+
+winner_file = os.path.join(
+
+    SAVE_DIR,
+
+    "Best_model_by_age.csv"
+
+)
+
+
+
+winner_df.to_csv(
+
+    winner_file,
+
+    index=False
+
+)
+
+
+
+print(
+
+    "\nBest predictive model by age"
+
+)
+
+print(
+
+    winner_df
+
+)
+
+
+
+
+
+# ============================================================
+# FIGURE 1
+# LIFESPAN PREDICTIVE TRAJECTORIES
+# ============================================================
+
+
+
+for outcome in outcomes:
+
+
+    plt.figure(
+
+        figsize=(13,7)
+
+    )
+
+
+    subset = prediction_df[
+
+        prediction_df["Outcome"]
+
+        ==
+
+        outcome
+
+    ]
+
+
+
+    for model_name in predictor_models.keys():
+
+
+        curve = subset[
+
+            subset["Model"]
+
+            ==
+
+            model_name
+
+        ].sort_values(
+
+            "Age"
+
+        )
+
+
+
+        if len(curve)==0:
+
+            continue
+
+
+
+        plt.plot(
+
+            curve["Age"],
+
+            curve["R2"],
+
+            linewidth=3,
+
+            color=model_colors[model_name],
+
+            label=model_name
+
+        )
+
+
+
+        plt.fill_between(
+
+            curve["Age"],
+
+            curve["CI_low"],
+
+            curve["CI_high"],
+
+            color=model_colors[model_name],
+
+            alpha=0.10
+
+        )
+
+
+
+    plt.axhline(
+
+        0,
+
+        linestyle="--",
+
+        color="black"
+
+    )
+
+
+
+    plt.xlabel(
+
+        "Age (years)"
+
+    )
+
+
+    plt.ylabel(
+
+        "Cross validated R²"
+
+    )
+
+
+    plt.title(
+
+        outcome +
+
+        "\nLifespan predictive performance"
+
+    )
+
+
+    plt.legend(
+
+        fontsize=8,
+
+        frameon=False
+
+    )
+
+
+    plt.tight_layout()
+
+
+
+    plt.savefig(
+
+        os.path.join(
+
+            FIG_DIR,
+
+            outcome +
+
+            "_lifespan_prediction.png"
+
+        ),
+
+        dpi=600,
+
+        bbox_inches="tight"
+
+    )
+
+
+    plt.close()
+
+
+
+
+
+# ============================================================
+# FIGURE 2
+# DIRECT PHYSIOLOGY COMPARISON
+#
+# BrainHeart
+# BrainRespiration
+# BrainBody
+# GlobalSignal
+# ActiveInference
+# ============================================================
+
+
+
+comparison_models = [
+
+    "BrainHeart",
+
+    "BrainRespiration",
+
+    "HeartRespiration",
+
+    "BrainBody",
+
+    "GlobalSignal",
+
+    "ActiveInference"
+
+]
+
+
+
+for outcome in outcomes:
+
+
+    plt.figure(
+
+        figsize=(12,7)
+
+    )
+
+
+
+    subset = prediction_df[
+
+        prediction_df["Outcome"]
+
+        ==
+
+        outcome
+
+    ]
+
+
+
+    for model_name in comparison_models:
+
+
+        curve = subset[
+
+            subset["Model"]
+
+            ==
+
+            model_name
+
+        ].sort_values(
+
+            "Age"
+
+        )
+
+
+        if len(curve)==0:
+
+            continue
+
+
+
+        plt.plot(
+
+            curve["Age"],
+
+            curve["R2"],
+
+            linewidth=4,
+
+            color=model_colors[model_name],
+
+            label=model_name
+
+        )
+
+
+
+    plt.axhline(
+
+        0,
+
+        color="black"
+
+    )
+
+
+
+    plt.xlabel(
+
+        "Age"
+
+    )
+
+
+    plt.ylabel(
+
+        "Prediction R²"
+
+    )
+
+
+
+    plt.title(
+
+        outcome +
+
+        "\nBrain-heart vs respiration vs brain-body vs global signal"
+
+    )
+
+
+    plt.legend(
+
+        frameon=False
+
+    )
+
+
+    plt.tight_layout()
+
+
+
+    plt.savefig(
+
+        os.path.join(
+
+            FIG_DIR,
+
+            outcome +
+
+            "_BrainBody_GlobalSignal_comparison.png"
+
+        ),
+
+        dpi=600,
+
+        bbox_inches="tight"
+
+    )
+
+
+    plt.close()
+
+
+
+
+# ============================================================
+# FIGURE 3
+# AGE x MODEL HEATMAP
+# ============================================================
+
+
+
+for outcome in outcomes:
+
+
+    heat = (
+
+        prediction_df[
+
+            prediction_df["Outcome"]
+
+            ==
+
+            outcome
+
+        ]
+
+        .pivot_table(
+
+            index="Model",
+
+            columns="Age",
+
+            values="R2",
+
+            aggfunc="mean"
+
+        )
+
+    )
+
+
+
+    if heat.empty:
+
+        continue
+
+
+
+    plt.figure(
+
+        figsize=(14,7)
+
+    )
+
+
+    sns.heatmap(
+
+        heat,
+
+        cmap="viridis",
+
+        center=0,
+
+        annot=True,
+
+        fmt=".2f"
+
+    )
+
+
+
+    plt.title(
+
+        outcome +
+
+        "\nPrediction performance by age bin"
+
+    )
+
+
+    plt.xlabel(
+
+        "Age"
+
+    )
+
+
+    plt.ylabel(
+
+        "Predictive model"
+
+    )
+
+
+
+    plt.tight_layout()
+
+
+
+    plt.savefig(
+
+        os.path.join(
+
+            FIG_DIR,
+
+            outcome +
+
+            "_prediction_heatmap.png"
+
+        ),
+
+        dpi=600,
+
+        bbox_inches="tight"
+
+    )
+
+
+    plt.close()
+
+
+
+print(
+
+    "Ranking and figures completed."
+
+)
+
+# ============================================================
+# STANDARDIZED BETA TRAJECTORIES
+# ============================================================
+
+
+for outcome in outcomes:
+
+
+    subset = beta_df[
+
+        beta_df["Outcome"]
+
+        ==
+
+        outcome
+
+    ]
+
+
+
+    if subset.empty:
+
+        continue
+
+
+
+    for model_name in subset["Model"].unique():
+
+
+        curve = subset[
+
+            subset["Model"]
+
+            ==
+
+            model_name
+
+        ]
+
+
+
+        if curve.empty:
+
+            continue
+
+
+
+        plt.figure(
+
+            figsize=(11,6)
+
+        )
+
+
+        sns.lineplot(
+
+            data=curve,
+
+            x="Age",
+
+            y="Beta",
+
+            hue="Predictor",
+
+            linewidth=3,
+
+            marker="o"
+
+        )
+
+
+
+        plt.axhline(
+
+            0,
+
+            color="black",
+
+            linestyle="--"
+
+        )
+
+
+        plt.title(
+
+            outcome
+
+            +
+
+            "\nStandardized predictors: "
+
+            +
+
+            model_name
+
+        )
+
+
+        plt.xlabel(
+
+            "Age"
+
+        )
+
+
+        plt.ylabel(
+
+            "Standardized beta"
+
+        )
+
+
+        plt.legend(
+
+            frameon=False,
+
+            fontsize=8
+
+        )
+
+
+
+        plt.tight_layout()
+
+
+
+        plt.savefig(
+
+            os.path.join(
+
+                FIG_DIR,
+
+                outcome
+
+                +
+
+                "_"
+
+                +
+
+                model_name
+
+                +
+
+                "_beta_trajectory.png"
+
+            ),
+
+            dpi=600,
+
+            bbox_inches="tight"
+
+        )
+
+
+
+        plt.close()
+
+
+
+
+
+# ============================================================
+# GLOBAL MODEL IMPORTANCE
+# ============================================================
+
+
+importance_rows = []
+
+
+
+for outcome in outcomes:
+
+
+    subset = beta_df[
+
+        beta_df["Outcome"]
+
+        ==
+
+        outcome
+
+    ]
+
+
+
+    if subset.empty:
+
+        continue
+
+
+
+    importance = (
+
+        subset
+
+        .groupby(
+
+            "Predictor"
+
+        )
+
+        ["Beta"]
+
+        .apply(
+
+            lambda x:
+
+            np.nanmean(
+
+                np.abs(x)
+
+            )
+
+        )
+
+        .sort_values(
+
+            ascending=False
+
+        )
+
+    )
+
+
+
+    for predictor,value in importance.items():
+
+
+        importance_rows.append(
+
+            {
+
+
+            "Outcome":
+
+                outcome,
+
+
+            "Predictor":
+
+                predictor,
+
+
+            "Mean_absolute_beta":
+
+                value
+
+
+            }
+
+        )
+
+
+
+
+importance_df = pd.DataFrame(
+
+    importance_rows
+
+)
+
+
+
+importance_file = os.path.join(
+
+    SAVE_DIR,
+
+    "Predictor_importance_summary.csv"
+
+)
+
+
+
+importance_df.to_csv(
+
+    importance_file,
+
+    index=False
+
+)
+
+
+
+print(
+
+    "\nPredictor importance saved"
+
+)
+
+print(
+
+    importance_df
+
+)
+
+
+
+
+# ============================================================
+# IMPORTANCE FIGURE
+# ============================================================
+
+
+
+if not importance_df.empty:
+
+
+    for outcome in outcomes:
+
+
+        subset = importance_df[
+
+            importance_df["Outcome"]
+
+            ==
+
+            outcome
+
+        ]
+
+
+
+        if subset.empty:
+
+            continue
+
+
+
+        plt.figure(
+
+            figsize=(10,6)
+
+        )
+
+
+
+        sns.barplot(
+
+            data=subset,
+
+            x="Mean_absolute_beta",
+
+            y="Predictor",
+
+            palette="viridis"
+
+        )
+
+
+        plt.title(
+
+            outcome
+
+            +
+
+            "\nAverage predictor contribution"
+
+        )
+
+
+        plt.xlabel(
+
+            "Mean |standardized beta|"
+
+        )
+
+
+        plt.ylabel(
+
+            ""
+
+        )
+
+
+        plt.tight_layout()
+
+
+
+        plt.savefig(
+
+            os.path.join(
+
+                FIG_DIR,
+
+                outcome
+
+                +
+
+                "_predictor_importance.png"
+
+            ),
+
+            dpi=600,
+
+            bbox_inches="tight"
+
+        )
+
+
+        plt.close()
+
+
+
+
+# ============================================================
+# FINAL ANALYTICAL SUMMARY
+# ============================================================
+
+
+
+summary = {
+
+    "Number_of_subjects":
+
+        len(df),
+
+
+    "Age_min":
+
+        float(df["Age"].min()),
+
+
+    "Age_max":
+
+        float(df["Age"].max()),
+
+
+    "Outcomes":
+
+        ", ".join(outcomes),
+
+
+    "Prediction_method":
+
+        "Ridge regression with StandardScaler",
+
+
+    "Cross_validation":
+
+        "5-fold KFold",
+
+
+    "Bootstrap_iterations":
+
+        500,
+
+
+    "Predictors":
+
+        ", ".join(
+
+            predictor_models.keys()
+
+        ),
+
+
+    "GlobalSignal":
+
+        "Included",
+
+
+    "BrainBody":
+
+        "BrainBody_Spearman_Model",
+
+
+    "ActiveInference":
+
+        "Included"
+
+
+}
+
+
+
+summary_df = pd.DataFrame(
+
+    summary,
+
+    index=[0]
+
+)
+
+
+
+summary_file = os.path.join(
+
+    SAVE_DIR,
+
+    "analysis_summary.csv"
+
+)
+
+
+
+summary_df.to_csv(
+
+    summary_file,
+
+    index=False
+
+)
+
+
+
+
+# ============================================================
+# PRINT FINAL RESULTS
+# ============================================================
+
+
+
+print(
+
+    "\n=========================================="
+
+)
+
+print(
+
+    "FULL AGE-BIN PREDICTIVE ANALYSIS COMPLETE"
+
+)
+
+print(
+
+    "=========================================="
+
+)
+
+
+
+print(
+
+    "\nResults folder:"
+
+)
+
+print(
+
+    SAVE_DIR
+
+)
+
+
+
+print(
+
+    "\nFigures folder:"
+
+)
+
+print(
+
+    FIG_DIR
+
+)
+
+
+
+print(
+
+    "\nGenerated files:"
+
+)
+
+
+for f in sorted(
+
+    os.listdir(SAVE_DIR)
+
+):
+
+    print(
+
+        " -",
+
+        f
+
+    )
+
+
+print(
+
+    "\n=========================================="
+
+)
+
+print(
+
+    "MODELS COMPARED"
+
+)
+
+print(
+
+    "=========================================="
+
+)
+
+
+for m in predictor_models.keys():
+
+    print(
+
+        m
+
+    )
+
+
+print(
+
+    "\nAnalysis finished successfully."
+
+)
