@@ -1,0 +1,463 @@
+# ============================================================
+# 28. PRINT COMPLETE RESULTS IN TERMINAL
+# ============================================================
+
+pd.set_option(
+    "display.max_rows",
+    500
+)
+
+pd.set_option(
+    "display.max_columns",
+    20
+)
+
+pd.set_option(
+    "display.width",
+    200
+)
+
+pd.set_option(
+    "display.float_format",
+    lambda x: f"{x:.4f}"
+)
+
+
+# ============================================================
+# COMPLETE AGE-BIN COMPARISON
+# ============================================================
+
+print(
+    "\n\n"
+    + "=" * 110
+)
+
+print(
+    "COMPLETE AGE-BIN MODEL COMPARISON"
+)
+
+print(
+    "=" * 110
+)
+
+
+for outcome in outcomes:
+
+    print(
+        "\n\n"
+        + "#" * 110
+    )
+
+    print(
+        f"OUTCOME: {outcome}"
+    )
+
+    print(
+        "#" * 110
+    )
+
+
+    subset = comparison[
+        comparison["Outcome"] == outcome
+    ].copy()
+
+
+    # --------------------------------------------------------
+    # PRINT AGE BIN BY AGE BIN
+    # --------------------------------------------------------
+
+    for age in sorted(
+        subset["Age"].unique()
+    ):
+
+        age_data = subset[
+            subset["Age"] == age
+        ].copy()
+
+
+        age_data = age_data.sort_values(
+            "R2",
+            ascending=False
+        )
+
+
+        print(
+            "\n"
+            + "-" * 110
+        )
+
+        print(
+            f"AGE BIN: {age:.1f} years"
+        )
+
+        print(
+            "-" * 110
+        )
+
+
+        display_columns = [
+
+            "Model",
+
+            "R2",
+
+            "CI_low",
+
+            "CI_high",
+
+            "Standardized_Beta",
+
+            "Mean_Absolute_Beta",
+
+            "R2_Rank",
+
+            "Importance_Rank"
+
+        ]
+
+
+        print(
+
+            age_data[
+                display_columns
+            ].to_string(
+                index=False
+            )
+
+        )
+
+
+# ============================================================
+# COMPACT R² TABLE
+# ============================================================
+
+print(
+    "\n\n"
+    + "=" * 110
+)
+
+print(
+    "R² BY AGE BIN — FIVE KEY MODELS"
+)
+
+print(
+    "=" * 110
+)
+
+
+for outcome in outcomes:
+
+    print(
+        f"\nOUTCOME: {outcome}\n"
+    )
+
+
+    r2_table = (
+
+        comparison[
+            comparison["Outcome"] == outcome
+        ]
+
+        .pivot_table(
+
+            index="Age",
+
+            columns="Model",
+
+            values="R2"
+
+        )
+
+        .reindex(
+            columns=comparison_models
+        )
+
+    )
+
+
+    print(
+        r2_table.to_string(
+            float_format=lambda x:
+            f"{x:.4f}"
+        )
+    )
+
+
+# ============================================================
+# COMPACT IMPORTANCE TABLE
+# ============================================================
+
+print(
+    "\n\n"
+    + "=" * 110
+)
+
+print(
+    "|STANDARDIZED β| BY AGE BIN — FIVE KEY MODELS"
+)
+
+print(
+    "=" * 110
+)
+
+
+for outcome in outcomes:
+
+    print(
+        f"\nOUTCOME: {outcome}\n"
+    )
+
+
+    importance_table = (
+
+        comparison[
+            comparison["Outcome"] == outcome
+        ]
+
+        .pivot_table(
+
+            index="Age",
+
+            columns="Model",
+
+            values="Mean_Absolute_Beta"
+
+        )
+
+        .reindex(
+            columns=comparison_models
+        )
+
+    )
+
+
+    print(
+        importance_table.to_string(
+            float_format=lambda x:
+            f"{x:.4f}"
+        )
+    )
+
+
+# ============================================================
+# BEST PREDICTIVE MODEL BY AGE
+# ============================================================
+
+print(
+    "\n\n"
+    + "=" * 110
+)
+
+print(
+    "BEST PREDICTIVE MODEL BY AGE"
+)
+
+print(
+    "=" * 110
+)
+
+
+print(
+
+    winner_df[
+        [
+            "Outcome",
+            "Age",
+            "Best_Model",
+            "Best_R2",
+            "CI_low",
+            "CI_high"
+        ]
+    ]
+
+    .sort_values(
+        [
+            "Outcome",
+            "Age"
+        ]
+    )
+
+    .to_string(
+        index=False
+    )
+
+)
+
+
+# ============================================================
+# MOST IMPORTANT MODEL BY AGE
+# ============================================================
+
+print(
+    "\n\n"
+    + "=" * 110
+)
+
+print(
+    "MOST IMPORTANT MODEL BY AGE"
+)
+
+print(
+    "=" * 110
+)
+
+
+print(
+
+    importance_winner_df[
+        [
+            "Outcome",
+            "Age",
+            "Most_Important_Model",
+            "Mean_Absolute_Beta",
+            "R2"
+        ]
+    ]
+
+    .sort_values(
+        [
+            "Outcome",
+            "Age"
+        ]
+    )
+
+    .to_string(
+        index=False
+    )
+
+)
+
+
+# ============================================================
+# OVERALL AGE-AVERAGED RESULTS
+# ============================================================
+
+print(
+    "\n\n"
+    + "=" * 110
+)
+
+print(
+    "OVERALL AGE-AVERAGED PERFORMANCE"
+)
+
+print(
+    "=" * 110
+)
+
+
+overall = (
+
+    comparison
+
+    .groupby(
+        [
+            "Outcome",
+            "Model"
+        ],
+        as_index=False
+    )
+
+    .agg(
+
+        Mean_R2=(
+            "R2",
+            "mean"
+        ),
+
+        Mean_Absolute_Beta=(
+            "Mean_Absolute_Beta",
+            "mean"
+        )
+
+    )
+
+)
+
+
+for outcome in outcomes:
+
+    print(
+        f"\nOUTCOME: {outcome}\n"
+    )
+
+
+    print(
+
+        overall[
+            overall["Outcome"] == outcome
+        ]
+
+        .sort_values(
+            "Mean_R2",
+            ascending=False
+        )
+
+        .to_string(
+            index=False
+        )
+
+    )
+
+
+# ============================================================
+# FINAL SUMMARY
+# ============================================================
+
+print(
+    "\n\n"
+    + "=" * 110
+)
+
+print(
+    "FINAL SUMMARY"
+)
+
+print(
+    "=" * 110
+)
+
+print(
+    f"\nModels compared:"
+)
+
+for model in comparison_models:
+
+    print(
+        f"  - {model}"
+    )
+
+
+print(
+    "\nOutcomes:"
+)
+
+for outcome in outcomes:
+
+    print(
+        f"  - {outcome}"
+    )
+
+
+print(
+    "\nNumber of age bins:",
+    comparison["Age"].nunique()
+)
+
+
+print(
+    "\nResults directory:"
+)
+
+print(
+    OUTPUT_DIR
+)
+
+
+print(
+    "\nAnalysis completed successfully."
+)
+
+print(
+    "=" * 110
+)
