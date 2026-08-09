@@ -125,6 +125,11 @@ Then the one that uses a cognitive proxy based in G factor: " Active_Inference_C
 
  and last the one that use a dynamic and energy independent cognitive proxy with robustness checks: perturbation and ablation " Robust_Model_Perturbation" 
 
+The code: 
+
+
+The code Simulation_Non_parametric : implements a proof-of-concept generative model of coupled brain, physiological, and energy-like dynamics. Neural oscillator networks interact with simulated heart and respiration signals and a scalar energy-like variable, with network topology, coupling strengths, noise, decay, and age-related modulation varied across simulations. Brain–body coordination is quantified using a non-parametric metric derived from Spearman rank correlations, and the model generates both energy-sensitive and energy-independent synthetic cognition outcomes. The resulting data are evaluated using Spearman rank correlations, permutation tests, bootstrap confidence intervals, and exploratory mediation analysis. The framework is designed as an in-silico model for investigating how structured dependencies can emerge from coupled nonlinear brain–body–energy dynamics, rather than as empirical evidence that energy causes biological cognition.
+
 
 Notes
 
