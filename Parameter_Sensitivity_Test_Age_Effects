@@ -1,0 +1,5224 @@
+# ================================================================
+# FAST MANUSCRIPT PEAK ROBUSTNESS ANALYSIS
+# BRAIN-BODY-ENERGY SIMULATION
+#
+# Main improvements
+# -----------------
+# 1. Explicit AGE_WINDOW controls the age range being simulated/analyzed.
+# 2. Subjects are generated directly inside AGE_WINDOW.
+# 3. Age bins are generated automatically from AGE_WINDOW.
+# 4. Mediation bootstrap is substantially faster.
+# 5. Permutation testing no longer performs a bootstrap inside every
+#    permutation.
+# 6. Networks are generated once per condition.
+# 8. PUBLICATION_MODE provides the heavier final run.
+#
+# Example:
+#     AGE_WINDOW = (45, 70)
+#
+
+# ================================================================
+
+import os
+import multiprocessing
+from dataclasses import dataclass
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+
+from joblib import Parallel, delayed
+from sklearn.linear_model import LinearRegression
+from statsmodels.stats.multitest import multipletests
+
+
+# ================================================================
+# 1. SETTINGS
+# ================================================================
+
+SEED_GLOBAL = 42
+
+N_CORES = max(
+    1,
+    multiprocessing.cpu_count() - 1
+)
+
+SAVE_DIR = "BrainBodyEnergy_PeakRobustness_FAST"
+FIG_DIR = os.path.join(SAVE_DIR, "figures")
+TABLE_DIR = os.path.join(SAVE_DIR, "tables")
+
+os.makedirs(FIG_DIR, exist_ok=True)
+os.makedirs(TABLE_DIR, exist_ok=True)
+
+
+# ----------------------------------------------------------------
+# AGE WINDOW
+# ----------------------------------------------------------------
+#
+# CHANGE THIS ONE LINE.
+#
+# Examples:
+#   AGE_WINDOW = (20, 80)   full adult lifespan
+#   AGE_WINDOW = (40, 70)   Brain-Body peak region
+#   AGE_WINDOW = (15, 35)   Active-Inference peak region
+#
+# If you want BOTH manuscript claims tested simultaneously, use
+# (15, 80).
+# ----------------------------------------------------------------
+
+AGE_WINDOW = (15.0, 80.0)
+
+AGE_BIN_WIDTH = 5.0
+
+AGE_MIN = float(AGE_WINDOW[0])
+AGE_MAX = float(AGE_WINDOW[1])
+
+AGE_BINS = np.arange(
+    AGE_MIN,
+    AGE_MAX + AGE_BIN_WIDTH,
+    AGE_BIN_WIDTH
+)
+
+if AGE_BINS[-1] < AGE_MAX:
+    AGE_BINS = np.append(AGE_BINS, AGE_MAX)
+
+
+# ================================================================
+# 2. SPEED / PUBLICATION SETTINGS
+# ================================================================
+
+# ------------------------------------------------
+# FAST_MODE
+# ------------------------------------------------
+#
+# True  = quick robustness exploration
+# False = heavier publication-style run
+# ------------------------------------------------
+
+FAST_MODE = True
+
+
+if FAST_MODE:
+
+    # Simulation
+    NETWORK_SIZES_RUN = [40, 80]
+    N_NETWORKS_RUN = 2
+    SEEDS_RUN = 5
+    SUBJECTS_RUN = 20
+
+    # Time
+    SIM_T = 300.0
+    SIM_DT = 0.10
+
+    # Statistical analysis
+    N_BOOT_MEDIATION = 100
+    N_PERMUTATIONS = 100
+
+else:
+
+    NETWORK_SIZES_RUN = [40, 80, 120]
+    N_NETWORKS_RUN = 5
+    SEEDS_RUN = 20
+    SUBJECTS_RUN = 50
+
+    SIM_T = 500.0
+    SIM_DT = 0.05
+
+    N_BOOT_MEDIATION = 1000
+    N_PERMUTATIONS = 1000
+
+
+# ================================================================
+# 3. MANUSCRIPT CLAIMS
+# ================================================================
+
+MANUSCRIPT_PEAKS = {
+    "BrainBody": 57.5,
+    "ActiveInference": 22.5,
+}
+
+
+PEAK_MATCH_YEARS = 5.0
+
+ROBUST_DETECTION_RATE = 0.90
+MODERATE_DETECTION_RATE = 0.70
+
+ROBUST_MEDIAN_SHIFT_YEARS = 5.0
+MODERATE_MEDIAN_SHIFT_YEARS = 10.0
+
+
+# ================================================================
+# 4. NETWORK / SIMULATION PARAMETERS
+# ================================================================
+
+BASE_PARAMS = {
+
+    "K_BODY": 0.05,
+    "K_ENERGY": 0.05,
+    "COUPLING_SCALE": 1.0,
+
+    "SW_K": 6,
+    "SW_P": 0.20,
+    "RANDOM_THRESHOLD": 0.90,
+
+    "G_AMPLITUDE": 0.60,
+    "G_PEAK_AGE": 40.0,
+    "G_WIDTH": 30.0,
+    "G_NOISE_SD": 0.05,
+
+    "NOISE_BASE": 0.020,
+    "NOISE_AGE_SLOPE": 0.0004,
+    "NOISE_RANDOM_SD": 0.003,
+
+    "DECAY_BASE": 0.020,
+    "DECAY_AGE_SLOPE": 0.0003,
+
+    "HEART_FREQ": 1.20,
+    "HEART_PHASE_NOISE": 0.01,
+
+    "ENERGY_PRODUCTION_BASE": 0.40,
+    "ENERGY_PRODUCTION_HEART": 0.20,
+    "ENERGY_CONSUMPTION": 0.05,
+
+    "INTRINSIC_GROWTH": 0.020,
+
+    "OMEGA_LOW": 8.0,
+    "OMEGA_HIGH": 12.0,
+
+    "COG_G_WEIGHT": 0.50,
+    "COG_E_WEIGHT": 0.50,
+    "COG_STABILITY_PENALTY": 0.30,
+
+    "COG_INDEPENDENT_NOISE": 0.10,
+}
+
+
+SENSITIVITY_VALUES = {
+
+    "K_BODY":
+        [0.025, 0.035, 0.050, 0.065, 0.075],
+
+    "K_ENERGY":
+        [0.025, 0.035, 0.050, 0.065, 0.075],
+
+    "COUPLING_SCALE":
+        [0.50, 0.75, 1.00, 1.25, 1.50],
+
+    "G_AMPLITUDE":
+        [0.40, 0.50, 0.60, 0.70, 0.80],
+
+    "G_PEAK_AGE":
+        [30.0, 35.0, 40.0, 45.0, 50.0],
+
+    "G_WIDTH":
+        [20.0, 25.0, 30.0, 35.0, 40.0],
+
+    "NOISE_BASE":
+        [0.010, 0.015, 0.020, 0.025, 0.030],
+
+    "NOISE_AGE_SLOPE":
+        [0.0002, 0.0003, 0.0004, 0.0005, 0.0006],
+
+    "DECAY_BASE":
+        [0.010, 0.015, 0.020, 0.025, 0.030],
+
+    "DECAY_AGE_SLOPE":
+        [0.00015, 0.000225, 0.00030,
+         0.000375, 0.00045],
+
+    "ENERGY_PRODUCTION_BASE":
+        [0.30, 0.35, 0.40, 0.45, 0.50],
+
+    "ENERGY_PRODUCTION_HEART":
+        [0.10, 0.15, 0.20, 0.25, 0.30],
+
+    "ENERGY_CONSUMPTION":
+        [0.025, 0.0375, 0.050,
+         0.0625, 0.075],
+
+    "HEART_FREQ":
+        [0.90, 1.05, 1.20, 1.35, 1.50],
+
+    "HEART_PHASE_NOISE":
+        [0.005, 0.0075, 0.010,
+         0.0125, 0.015],
+
+    "INTRINSIC_GROWTH":
+        [0.010, 0.015, 0.020, 0.025, 0.030],
+
+    "OMEGA_LOW":
+        [6.0, 7.0, 8.0, 9.0, 10.0],
+
+    "OMEGA_HIGH":
+        [10.0, 11.0, 12.0, 13.0, 14.0],
+
+    "DT":
+        [0.025, 0.05, 0.075, 0.10],
+
+    "T":
+        [300.0, 400.0, 500.0, 600.0, 700.0],
+}
+
+
+NETWORK_SENSITIVITY = {
+
+    "NETWORK_SIZE":
+        [40, 80, 120, 160],
+
+    "SW_K":
+        [4, 6, 8, 10],
+
+    "SW_P":
+        [0.05, 0.10, 0.20, 0.30, 0.40],
+
+    "RANDOM_THRESHOLD":
+        [0.80, 0.85, 0.90, 0.95],
+}
+
+
+# ================================================================
+# 5. PARAMETER PREPARATION
+# ================================================================
+
+def prepare_params(overrides=None):
+
+    params = dict(BASE_PARAMS)
+
+    if overrides:
+        params.update(overrides)
+
+    params["DT"] = float(
+        params.get("DT", SIM_DT)
+    )
+
+    params["T"] = float(
+        params.get("T", SIM_T)
+    )
+
+    params["STEPS"] = int(
+        round(params["T"] / params["DT"])
+    )
+
+    return params
+
+
+# ================================================================
+# 6. NETWORKS
+# ================================================================
+
+def small_world(
+    N,
+    k=6,
+    p=0.2,
+    seed=None
+):
+
+    rng = np.random.default_rng(seed)
+
+    W = np.zeros(
+        (N, N),
+        dtype=np.float32
+    )
+
+    for i in range(N):
+
+        for j in range(
+            1,
+            k // 2 + 1
+        ):
+
+            W[
+                i,
+                (i + j) % N
+            ] = 1.0
+
+            W[
+                i,
+                (i - j) % N
+            ] = 1.0
+
+    for i in range(N):
+
+        for j in range(N):
+
+            if (
+                W[i, j] == 1.0
+                and rng.random() < p
+            ):
+
+                W[i, j] = 0.0
+
+                new = int(
+                    rng.integers(N)
+                )
+
+                guard = 0
+
+                while (
+                    (
+                        new == i
+                        or W[i, new] == 1.0
+                    )
+                    and guard < 1000
+                ):
+
+                    new = int(
+                        rng.integers(N)
+                    )
+
+                    guard += 1
+
+                if new != i:
+                    W[i, new] = 1.0
+
+    W = (
+        W + W.T
+    ) / 2.0
+
+    np.fill_diagonal(
+        W,
+        0.0
+    )
+
+    return W
+
+
+def random_network(
+    N,
+    threshold=0.90,
+    seed=None
+):
+
+    rng = np.random.default_rng(seed)
+
+    W = rng.random(
+        (N, N)
+    ).astype(np.float32)
+
+    W = (
+        W + W.T
+    ) / 2.0
+
+    W[
+        W < threshold
+    ] = 0.0
+
+    np.fill_diagonal(
+        W,
+        0.0
+    )
+
+    return W
+
+
+def lattice_network(
+    N,
+    k=6
+):
+
+    W = np.zeros(
+        (N, N),
+        dtype=np.float32
+    )
+
+    for i in range(N):
+
+        for j in range(
+            1,
+            k // 2 + 1
+        ):
+
+            W[
+                i,
+                (i + j) % N
+            ] = 1.0
+
+            W[
+                i,
+                (i - j) % N
+            ] = 1.0
+
+    return W
+
+
+def normalize_connectivity(W):
+
+    eig = np.linalg.eigvals(W)
+
+    maximum = float(
+        np.max(
+            np.abs(eig)
+        )
+    )
+
+    if maximum == 0:
+        return W
+
+    return (
+        W / maximum
+    ).astype(np.float32)
+
+
+def graph_laplacian(W):
+
+    degree = W.sum(
+        axis=1
+    )
+
+    return (
+        np.diag(degree)
+        - W
+    ).astype(np.float32)
+
+
+def create_networks(
+    params,
+    network_sizes
+):
+
+    networks = []
+
+    net_counter = 0
+
+    for N in network_sizes:
+
+        for topology in (
+            "smallworld",
+            "random",
+            "lattice"
+        ):
+
+            for rep in range(
+                N_NETWORKS_RUN
+            ):
+
+                if topology == "smallworld":
+
+                    W = small_world(
+                        N,
+                        int(params["SW_K"]),
+                        params["SW_P"],
+                        seed=rep
+                    )
+
+                elif topology == "random":
+
+                    W = random_network(
+                        N,
+                        params["RANDOM_THRESHOLD"],
+                        seed=rep
+                    )
+
+                else:
+
+                    W = lattice_network(
+                        N,
+                        int(params["SW_K"])
+                    )
+
+                W = normalize_connectivity(W)
+
+                L = graph_laplacian(W)
+
+                networks.append(
+                    (
+                        W,
+                        L,
+                        net_counter,
+                        N,
+                        topology,
+                        rep
+                    )
+                )
+
+                net_counter += 1
+
+    return networks
+
+
+# ================================================================
+# 7. BODY SIMULATION
+# ================================================================
+
+def simulate_body(
+    seed,
+    params
+):
+
+    rng = np.random.default_rng(seed)
+
+    phase = 0.0
+
+    heart = np.zeros(
+        params["STEPS"],
+        dtype=np.float32
+    )
+
+    phase_increment = (
+        2.0
+        * np.pi
+        * params["HEART_FREQ"]
+        * params["DT"]
+    )
+
+    for t in range(
+        params["STEPS"]
+    ):
+
+        phase += (
+            phase_increment
+            + rng.normal(
+                0.0,
+                params["HEART_PHASE_NOISE"]
+            )
+        )
+
+        heart[t] = np.sin(
+            phase
+        )
+
+    return heart
+
+
+# ================================================================
+# 8. AGE MODULATION
+# ================================================================
+
+def age_modulation(
+    age,
+    rng,
+    params
+):
+
+    G = (
+
+        params["G_AMPLITUDE"]
+
+        * np.exp(
+            -(
+                (
+                    age
+                    - params["G_PEAK_AGE"]
+                )
+                / params["G_WIDTH"]
+            ) ** 2
+        )
+
+        + rng.normal(
+            0.0,
+            params["G_NOISE_SD"]
+        )
+    )
+
+    noise = (
+
+        params["NOISE_BASE"]
+
+        + params["NOISE_AGE_SLOPE"]
+        * age
+
+        + rng.normal(
+            0.0,
+            params["NOISE_RANDOM_SD"]
+        )
+    )
+
+    noise = max(
+        noise,
+        0.0
+    )
+
+    decay = (
+
+        params["DECAY_BASE"]
+
+        + params["DECAY_AGE_SLOPE"]
+        * age
+    )
+
+    return (
+        G,
+        noise,
+        decay
+    )
+
+
+# ================================================================
+# 9. BRAIN / ENERGY SIMULATION
+# ================================================================
+
+def simulate_brain_energy(
+    L,
+    G,
+    noise,
+    heart,
+    decay,
+    params,
+    seed
+):
+
+    rng = np.random.default_rng(
+        seed
+    )
+
+    N = L.shape[0]
+
+    steps = params["STEPS"]
+    dt = params["DT"]
+
+    z = (
+        rng.normal(
+            size=N
+        )
+        + 1j * rng.normal(
+            size=N
+        )
+    ).astype(
+        np.complex64
+    )
+
+    omega = rng.uniform(
+        params["OMEGA_LOW"],
+        params["OMEGA_HIGH"],
+        N
+    ).astype(
+        np.float32
+    )
+
+    omega *= (
+        2.0
+        * np.pi
+        / 100.0
+    )
+
+    E = 1.0
+
+    power = np.zeros(
+        (steps, N),
+        dtype=np.float32
+    )
+
+    energy = np.zeros(
+        steps,
+        dtype=np.float32
+    )
+
+    coupling_scale = (
+        params["COUPLING_SCALE"]
+        * G
+    )
+
+    for t in range(steps):
+
+        brain_power = float(
+            np.mean(
+                np.abs(z) ** 2
+            )
+        )
+
+        prod = (
+
+            params[
+                "ENERGY_PRODUCTION_BASE"
+            ]
+
+            + params[
+                "ENERGY_PRODUCTION_HEART"
+            ]
+            * heart[t]
+        )
+
+        cons = (
+            params[
+                "ENERGY_CONSUMPTION"
+            ]
+            * brain_power
+        )
+
+        dE = (
+            prod
+            - cons
+            - decay * E
+        )
+
+        E = max(
+            E + dE * dt,
+            0.0
+        )
+
+        forcing = (
+
+            params["K_BODY"]
+            * heart[t]
+
+            + params["K_ENERGY"]
+            * E
+        )
+
+        coupling = (
+            -coupling_scale
+            * (L @ z)
+        )
+
+        intrinsic = (
+
+            params[
+                "INTRINSIC_GROWTH"
+            ]
+
+            + 1j * omega
+
+            - np.abs(z) ** 2
+        ) * z
+
+        noise_term = (
+
+            noise
+            * np.sqrt(dt)
+
+            * (
+                rng.normal(
+                    size=N
+                )
+
+                + 1j
+                * rng.normal(
+                    size=N
+                )
+            )
+        )
+
+        dz = (
+
+            intrinsic
+            + coupling
+            + forcing * z
+            + noise_term
+        )
+
+        z += (
+            dz * dt
+        ).astype(
+            np.complex64
+        )
+
+        power[t] = (
+            np.abs(z) ** 2
+        )
+
+        energy[t] = E
+
+    return (
+        power,
+        energy
+    )
+
+
+# ================================================================
+# 10. METRICS
+# ================================================================
+
+def coherence(
+    sig1,
+    sig2
+):
+
+    phase1 = np.angle(
+        sig1
+    )
+
+    phase2 = np.angle(
+        sig2
+    )
+
+    return float(
+        np.abs(
+            np.mean(
+                np.exp(
+                    1j
+                    * (
+                        phase1
+                        - phase2
+                    )
+                )
+            )
+        )
+    )
+
+
+def energy_metrics(E):
+
+    return (
+        float(np.std(E)),
+        float(np.mean(E))
+    )
+
+
+def cognition_energy(
+    E,
+    G,
+    params
+):
+
+    return float(
+
+        params[
+            "COG_G_WEIGHT"
+        ] * G
+
+        + params[
+            "COG_E_WEIGHT"
+        ] * np.mean(E)
+
+        - params[
+            "COG_STABILITY_PENALTY"
+        ] * np.std(E)
+    )
+
+
+def cognition_independent(
+    heart,
+    rng,
+    params
+):
+
+    return float(
+
+        np.mean(heart)
+
+        + rng.normal(
+            0.0,
+            params[
+                "COG_INDEPENDENT_NOISE"
+            ]
+        )
+    )
+
+
+def free_energy_metric(
+    power
+):
+
+    pred = np.mean(
+        power,
+        axis=1
+    )
+
+    return float(
+        np.mean(
+            np.diff(pred) ** 2
+        )
+    )
+
+
+# ================================================================
+# 11. SUBJECT SIMULATION
+# ================================================================
+
+def simulate_subject(
+    job
+):
+
+    (
+        W,
+        L,
+        net_id,
+        network_size,
+        topology,
+        network_rep,
+        seed,
+        subj,
+        params,
+        condition_id,
+        sensitivity_parameter,
+        sensitivity_value
+    ) = job
+
+    subject_seed = int(
+        seed * 100000
+        + subj
+        + 1000 * net_id
+    )
+
+    rng = np.random.default_rng(
+        subject_seed
+    )
+
+    # ------------------------------------------------------------
+    # IMPORTANT:
+    # Generate age ONLY inside the requested window.
+    # ------------------------------------------------------------
+
+    age = float(
+        rng.uniform(
+            AGE_MIN,
+            AGE_MAX
+        )
+    )
+
+    G, noise, decay = age_modulation(
+        age,
+        rng,
+        params
+    )
+
+    heart = simulate_body(
+        seed + subj,
+        params
+    )
+
+    power, E = simulate_brain_energy(
+        L,
+        G,
+        noise,
+        heart,
+        decay,
+        params,
+        seed + subj
+    )
+
+    brain = np.mean(
+        power,
+        axis=1
+    )
+
+    brain_body = coherence(
+        brain,
+        heart
+    )
+
+    active_inference = (
+        free_energy_metric(
+            power
+        )
+    )
+
+    null_model = float(
+        rng.normal()
+    )
+
+    stab, eff = energy_metrics(
+        E
+    )
+
+    cog_energy = cognition_energy(
+        E,
+        G,
+        params
+    )
+
+    cog_indep = cognition_independent(
+        heart,
+        rng,
+        params
+    )
+
+    return {
+
+        "Condition":
+            condition_id,
+
+        "SensitivityParameter":
+            sensitivity_parameter,
+
+        "SensitivityValue":
+            sensitivity_value,
+
+        "NetworkID":
+            net_id,
+
+        "NetworkSize":
+            network_size,
+
+        "Topology":
+            topology,
+
+        "NetworkRep":
+            network_rep,
+
+        "Seed":
+            seed,
+
+        "Subject":
+            subj,
+
+        "Age":
+            age,
+
+        "G":
+            G,
+
+        "Noise":
+            noise,
+
+        "Decay":
+            decay,
+
+        "BrainBody":
+            brain_body,
+
+        "ActiveInference":
+            active_inference,
+
+        "NullModel":
+            null_model,
+
+        "EnergyStability":
+            stab,
+
+        "EnergyEfficiency":
+            eff,
+
+        "CogEnergy":
+            cog_energy,
+
+        "CogIndependent":
+            cog_indep,
+    }
+
+
+# ================================================================
+# 12. JOB CREATION
+# ================================================================
+
+def create_jobs(
+    params,
+    condition_id,
+    sensitivity_parameter,
+    sensitivity_value,
+    network_sizes
+):
+
+    networks = create_networks(
+        params,
+        network_sizes
+    )
+
+    jobs = []
+
+    for (
+        W,
+        L,
+        net_id,
+        N,
+        topology,
+        rep
+    ) in networks:
+
+        for seed in range(
+            SEEDS_RUN
+        ):
+
+            for subj in range(
+                SUBJECTS_RUN
+            ):
+
+                jobs.append(
+                    (
+                        W,
+                        L,
+                        net_id,
+                        N,
+                        topology,
+                        rep,
+                        seed,
+                        subj,
+                        params,
+                        condition_id,
+                        sensitivity_parameter,
+                        sensitivity_value
+                    )
+                )
+
+    return jobs
+
+
+def run_condition(
+    condition_id,
+    parameter,
+    value,
+    overrides,
+    network_sizes
+):
+
+    params = prepare_params(
+        overrides
+    )
+
+    jobs = create_jobs(
+        params,
+        condition_id,
+        parameter,
+        value,
+        network_sizes
+    )
+
+    print(
+        f"Running "
+        f"{condition_id:>28s} "
+        f"| jobs={len(jobs):,}"
+    )
+
+    results = Parallel(
+        n_jobs=N_CORES,
+        backend="loky",
+        verbose=0
+    )(
+        delayed(
+            simulate_subject
+        )(job)
+
+        for job in jobs
+    )
+
+    return pd.DataFrame(
+        results
+    )
+
+
+# ================================================================
+# 13. FAST MEDIATION
+# ================================================================
+#
+# Instead of:
+#
+#   bootstrap
+#       inside permutation
+#           inside age bin
+#               inside sensitivity condition
+#
+# we calculate the mediation effect directly and bootstrap it only
+# when required.
+#
+# This is one of the largest speed improvements.
+# ================================================================
+
+def mediation_effect(
+    X,
+    M,
+    Y
+):
+
+    X = np.asarray(
+        X,
+        dtype=float
+    )
+
+    M = np.asarray(
+        M,
+        dtype=float
+    )
+
+    Y = np.asarray(
+        Y,
+        dtype=float
+    )
+
+    valid = (
+        np.isfinite(X)
+        & np.isfinite(M)
+        & np.isfinite(Y)
+    )
+
+    X = X[valid]
+    M = M[valid]
+    Y = Y[valid]
+
+    if len(X) < 5:
+        return np.nan
+
+    X1 = np.column_stack(
+        [
+            np.ones(len(X)),
+            X
+        ]
+    )
+
+    a = np.linalg.lstsq(
+        X1,
+        M,
+        rcond=None
+    )[0][1]
+
+    XM = np.column_stack(
+        [
+            np.ones(len(X)),
+            X,
+            M
+        ]
+    )
+
+    b = np.linalg.lstsq(
+        XM,
+        Y,
+        rcond=None
+    )[0][2]
+
+    return float(
+        a * b
+    )
+
+
+def bootstrap_mediation_fast(
+    X,
+    M,
+    Y,
+    n_boot,
+    seed
+):
+
+    X = np.asarray(
+        X,
+        dtype=float
+    )
+
+    M = np.asarray(
+        M,
+        dtype=float
+    )
+
+    Y = np.asarray(
+        Y,
+        dtype=float
+    )
+
+    valid = (
+        np.isfinite(X)
+        & np.isfinite(M)
+        & np.isfinite(Y)
+    )
+
+    X = X[valid]
+    M = M[valid]
+    Y = Y[valid]
+
+    n = len(X)
+
+    if n < 5:
+        return {
+            "indirect_mean": np.nan,
+            "ci_lower": np.nan,
+            "ci_upper": np.nan
+        }
+
+    rng = np.random.default_rng(
+        seed
+    )
+
+    effects = np.empty(
+        n_boot,
+        dtype=float
+    )
+
+    for i in range(
+        n_boot
+    ):
+
+        idx = rng.integers(
+            0,
+            n,
+            n
+        )
+
+        effects[i] = mediation_effect(
+            X[idx],
+            M[idx],
+            Y[idx]
+        )
+
+    effects = effects[
+        np.isfinite(effects)
+    ]
+
+    if len(effects) == 0:
+        return {
+            "indirect_mean": np.nan,
+            "ci_lower": np.nan,
+            "ci_upper": np.nan
+        }
+
+    return {
+
+        "indirect_mean":
+            float(
+                np.mean(effects)
+            ),
+
+        "ci_lower":
+            float(
+                np.percentile(
+                    effects,
+                    2.5
+                )
+            ),
+
+        "ci_upper":
+            float(
+                np.percentile(
+                    effects,
+                    97.5
+                )
+            ),
+    }
+
+
+# ================================================================
+# 14. FAST PERMUTATION P-VALUE
+# ================================================================
+
+def permutation_pvalue_fast(
+    X,
+    M,
+    Y,
+    n_perm,
+    seed
+):
+
+    X = np.asarray(
+        X,
+        dtype=float
+    )
+
+    M = np.asarray(
+        M,
+        dtype=float
+    )
+
+    Y = np.asarray(
+        Y,
+        dtype=float
+    )
+
+    valid = (
+        np.isfinite(X)
+        & np.isfinite(M)
+        & np.isfinite(Y)
+    )
+
+    X = X[valid]
+    M = M[valid]
+    Y = Y[valid]
+
+    if len(X) < 5:
+        return np.nan
+
+    observed = mediation_effect(
+        X,
+        M,
+        Y
+    )
+
+    if not np.isfinite(
+        observed
+    ):
+        return np.nan
+
+    rng = np.random.default_rng(
+        seed
+    )
+
+    count = 0
+
+    for _ in range(
+        n_perm
+    ):
+
+        Y_perm = rng.permutation(
+            Y
+        )
+
+        null_effect = mediation_effect(
+            X,
+            M,
+            Y_perm
+        )
+
+        if (
+            np.isfinite(null_effect)
+            and abs(null_effect)
+            >= abs(observed)
+        ):
+            count += 1
+
+    return float(
+        (count + 1)
+        / (n_perm + 1)
+    )
+
+
+# ================================================================
+# 15. AGE-BIN MEDIATION CURVE
+# ================================================================
+
+def age_mediation_curve(
+    data,
+    predictor
+):
+
+    work = data.copy()
+
+    work["Age_bin"] = pd.cut(
+        work["Age"],
+        bins=AGE_BINS,
+        include_lowest=True
+    )
+
+    rows = []
+
+    for age_bin, group in work.groupby(
+        "Age_bin",
+        observed=False
+    ):
+
+        if len(group) < 5:
+            continue
+
+        age_mid = float(
+            age_bin.mid
+        )
+
+        real = bootstrap_mediation_fast(
+            group[predictor].values,
+            group["EnergyEfficiency"].values,
+            group["CogEnergy"].values,
+            n_boot=N_BOOT_MEDIATION,
+            seed=(
+                SEED_GLOBAL
+                + int(age_mid * 10)
+            )
+        )
+
+        null_effect = mediation_effect(
+            group["NullModel"].values,
+            group["EnergyEfficiency"].values,
+            group["CogEnergy"].values
+        )
+
+        p = permutation_pvalue_fast(
+            group[predictor].values,
+            group["EnergyEfficiency"].values,
+            group["CogEnergy"].values,
+            n_perm=N_PERMUTATIONS,
+            seed=(
+                SEED_GLOBAL
+                + 10000
+                + int(age_mid * 10)
+            )
+        )
+
+        rows.append({
+
+            "Age":
+                age_mid,
+
+            "Predictor":
+                predictor,
+
+            "Mean":
+                real["indirect_mean"],
+
+            "CI_low":
+                real["ci_lower"],
+
+            "CI_high":
+                real["ci_upper"],
+
+            "NullMean":
+                null_effect,
+
+            "p":
+                p,
+
+            "N":
+                len(group),
+        })
+
+    curve = pd.DataFrame(
+        rows
+    )
+
+    if curve.empty:
+        return curve
+
+    curve["p_FDR"] = np.nan
+
+    curve["Significant"] = False
+
+    finite = curve[
+        "p"
+    ].notna()
+
+    if finite.any():
+
+        reject, p_adj, _, _ = (
+            multipletests(
+                curve.loc[
+                    finite,
+                    "p"
+                ].values,
+
+                alpha=0.05,
+
+                method="fdr_bh"
+            )
+        )
+
+        curve.loc[
+            finite,
+            "p_FDR"
+        ] = p_adj
+
+        curve.loc[
+            finite,
+            "Significant"
+        ] = reject
+
+    curve[
+        "ObservedMinusNull"
+    ] = (
+        curve["Mean"]
+        - curve["NullMean"]
+    )
+
+    curve[
+        "NegativeEffect"
+    ] = (
+        curve["Mean"] < 0
+    )
+
+    curve[
+        "SignificantNegative"
+    ] = (
+        curve["Significant"]
+        & curve["NegativeEffect"]
+    )
+
+    return curve
+
+
+# ================================================================
+# 16. MANUSCRIPT PEAK DETECTION
+# ================================================================
+
+def detect_manuscript_peak(
+    curve,
+    predictor
+):
+
+    if curve.empty:
+        return None
+
+    c = (
+        curve
+        .sort_values("Age")
+        .reset_index(drop=True)
+        .copy()
+    )
+
+    # ------------------------------------------------------------
+    # Explicitly restrict peak search to AGE_WINDOW.
+    # ------------------------------------------------------------
+
+    c = c[
+        (
+            c["Age"]
+            >= AGE_MIN
+        )
+        &
+        (
+            c["Age"]
+            <= AGE_MAX
+        )
+    ].reset_index(
+        drop=True
+    )
+
+    if c.empty:
+        return None
+
+    y = c[
+        "Mean"
+    ].to_numpy(
+        dtype=float
+    )
+
+    sig = c[
+        "SignificantNegative"
+    ].to_numpy(
+        dtype=bool
+    )
+
+    valid = (
+        np.isfinite(y)
+        & sig
+    )
+
+    if valid.sum() == 0:
+        return None
+
+    # ------------------------------------------------------------
+    # Find local minima manually.
+    # Avoid scipy.signal.find_peaks dependency.
+    # ------------------------------------------------------------
+
+    local_candidates = []
+
+    for i in range(
+        1,
+        len(c) - 1
+    ):
+
+        if not valid[i]:
+            continue
+
+        left = y[i - 1]
+        center = y[i]
+        right = y[i + 1]
+
+        if (
+            center <= left
+            and center <= right
+        ):
+            local_candidates.append(
+                i
+            )
+
+    # If no local minimum exists, select the most negative
+    # significant point.
+    if local_candidates:
+
+        idx = local_candidates[
+            np.argmin(
+                y[
+                    local_candidates
+                ]
+            )
+        ]
+
+    else:
+
+        candidates = np.where(
+            valid
+        )[0]
+
+        idx = candidates[
+            np.argmin(
+                y[candidates]
+            )
+        ]
+
+    return {
+
+        "Age":
+            float(
+                c.loc[idx, "Age"]
+            ),
+
+        "Effect":
+            float(
+                c.loc[idx, "Mean"]
+            ),
+
+        "CI_low":
+            float(
+                c.loc[idx, "CI_low"]
+            ),
+
+        "CI_high":
+            float(
+                c.loc[idx, "CI_high"]
+            ),
+
+        "p":
+            float(
+                c.loc[idx, "p"]
+            ),
+
+        "p_FDR":
+            float(
+                c.loc[idx, "p_FDR"]
+            ),
+
+        "N":
+            int(
+                c.loc[idx, "N"]
+            ),
+    }
+
+
+# ================================================================
+# 17. CONDITIONS
+# ================================================================
+
+def build_conditions():
+
+    conditions = [
+        (
+            "baseline",
+            "BASELINE",
+            np.nan,
+            {}
+        )
+    ]
+
+    for parameter, values in (
+        SENSITIVITY_VALUES.items()
+    ):
+
+        for value in values:
+
+            baseline = BASE_PARAMS.get(
+                parameter
+            )
+
+            if (
+                baseline is not None
+                and np.isclose(
+                    float(value),
+                    float(baseline)
+                )
+            ):
+
+                condition_id = (
+                    f"{parameter}_baseline"
+                )
+
+            else:
+
+                condition_id = (
+                    f"{parameter}_{value}"
+                )
+
+            conditions.append(
+                (
+                    condition_id,
+                    parameter,
+                    value,
+                    {
+                        parameter:
+                            value
+                    }
+                )
+            )
+
+    for parameter, values in (
+        NETWORK_SENSITIVITY.items()
+    ):
+
+        if parameter == "NETWORK_SIZE":
+            continue
+
+        for value in values:
+
+            conditions.append(
+                (
+                    f"{parameter}_{value}",
+                    parameter,
+                    value,
+                    {
+                        parameter:
+                            value
+                    }
+                )
+            )
+
+    # Unique conditions.
+    seen = set()
+    output = []
+
+    for condition in conditions:
+
+        if condition[0] not in seen:
+
+            output.append(
+                condition
+            )
+
+            seen.add(
+                condition[0]
+            )
+
+    return output
+
+
+# ================================================================
+# 18. ANALYZE CONDITION
+# ================================================================
+
+def analyze_condition(
+    condition_id,
+    parameter,
+    value,
+    overrides,
+    network_sizes
+):
+
+    df = run_condition(
+        condition_id,
+        parameter,
+        value,
+        overrides,
+        network_sizes
+    )
+
+    curves = []
+    peaks = []
+
+    for predictor in MANUSCRIPT_PEAKS:
+
+        curve = age_mediation_curve(
+            df,
+            predictor
+        )
+
+        if not curve.empty:
+
+            curve.insert(
+                0,
+                "Condition",
+                condition_id
+            )
+
+            curves.append(
+                curve
+            )
+
+            peak = detect_manuscript_peak(
+                curve,
+                predictor
+            )
+
+            if peak is not None:
+
+                peaks.append({
+
+                    "Condition":
+                        condition_id,
+
+                    "Parameter":
+                        parameter,
+
+                    "SensitivityValue":
+                        value,
+
+                    "Predictor":
+                        predictor,
+
+                    "Detected":
+                        True,
+
+                    "PeakAge":
+                        peak["Age"],
+
+                    "PeakEffect":
+                        peak["Effect"],
+
+                    "PeakCI_low":
+                        peak["CI_low"],
+
+                    "PeakCI_high":
+                        peak["CI_high"],
+
+                    "p":
+                        peak["p"],
+
+                    "p_FDR":
+                        peak["p_FDR"],
+
+                    "N":
+                        peak["N"],
+                })
+
+        if not any(
+            r["Condition"] == condition_id
+            and r["Predictor"] == predictor
+            for r in peaks
+        ):
+
+            peaks.append({
+
+                "Condition":
+                    condition_id,
+
+                "Parameter":
+                    parameter,
+
+                "SensitivityValue":
+                    value,
+
+                "Predictor":
+                    predictor,
+
+                "Detected":
+                    False,
+
+                "PeakAge":
+                    np.nan,
+
+                "PeakEffect":
+                    np.nan,
+
+                "PeakCI_low":
+                    np.nan,
+
+                "PeakCI_high":
+                    np.nan,
+
+                "p":
+                    np.nan,
+
+                "p_FDR":
+                    np.nan,
+
+                "N":
+                    np.nan,
+            })
+
+    if curves:
+
+        curve_df = pd.concat(
+            curves,
+            ignore_index=True
+        )
+
+    else:
+
+        curve_df = pd.DataFrame()
+
+    return (
+        df,
+        curve_df,
+        pd.DataFrame(peaks)
+    )
+
+
+# ================================================================
+# 19. RUN ALL CONDITIONS
+# ================================================================
+
+def run_all_conditions():
+
+    all_subjects = []
+    all_curves = []
+    all_peaks = []
+
+    conditions = build_conditions()
+
+    print()
+    print("=" * 78)
+    print("FAST MANUSCRIPT PEAK ROBUSTNESS ANALYSIS")
+    print("=" * 78)
+
+    print(
+        f"Age window       : "
+        f"{AGE_MIN:.1f} - {AGE_MAX:.1f} years"
+    )
+
+    print(
+        f"Age bin width    : "
+        f"{AGE_BIN_WIDTH:.1f} years"
+    )
+
+    print(
+        f"Conditions       : "
+        f"{len(conditions)}"
+    )
+
+    print(
+        f"Workers          : "
+        f"{N_CORES}"
+    )
+
+    print(
+        f"FAST_MODE        : "
+        f"{FAST_MODE}"
+    )
+
+    print(
+        f"Subjects/seed    : "
+        f"{SUBJECTS_RUN}"
+    )
+
+    print(
+        f"Seeds/network    : "
+        f"{SEEDS_RUN}"
+    )
+
+    print(
+        f"Simulation T     : "
+        f"{SIM_T}"
+    )
+
+    print(
+        f"Simulation DT    : "
+        f"{SIM_DT}"
+    )
+
+    print("=" * 78)
+
+    # ------------------------------------------------------------
+    # Standard sensitivity conditions.
+    # ------------------------------------------------------------
+
+    for (
+        condition_id,
+        parameter,
+        value,
+        overrides
+    ) in conditions:
+
+        (
+            df,
+            curve,
+            peak
+        ) = analyze_condition(
+            condition_id,
+            parameter,
+            value,
+            overrides,
+            NETWORK_SIZES_RUN
+        )
+
+        all_subjects.append(
+            df
+        )
+
+        if not curve.empty:
+
+            all_curves.append(
+                curve
+            )
+
+        all_peaks.append(
+            peak
+        )
+
+    # ------------------------------------------------------------
+    # Network-size sensitivity.
+    # ------------------------------------------------------------
+
+    for value in (
+        NETWORK_SENSITIVITY[
+            "NETWORK_SIZE"
+        ]
+    ):
+
+        condition_id = (
+            f"NETWORK_SIZE_{value}"
+        )
+
+        (
+            df,
+            curve,
+            peak
+        ) = analyze_condition(
+            condition_id,
+            "NETWORK_SIZE",
+            value,
+            {},
+            [int(value)]
+        )
+
+        all_subjects.append(
+            df
+        )
+
+        if not curve.empty:
+
+            all_curves.append(
+                curve
+            )
+
+        all_peaks.append(
+            peak
+        )
+
+    subjects = pd.concat(
+        all_subjects,
+        ignore_index=True
+    )
+
+    curves = (
+        pd.concat(
+            all_curves,
+            ignore_index=True
+        )
+        if all_curves
+        else pd.DataFrame()
+    )
+
+    peaks = pd.concat(
+        all_peaks,
+        ignore_index=True
+    )
+
+    return (
+        subjects,
+        curves,
+        peaks
+    )
+
+
+# ================================================================
+# 20. MANUSCRIPT-LEVEL SUMMARY
+# ================================================================
+
+def summarize_manuscript_peak(
+    peaks
+):
+
+    rows = []
+
+    for (
+        predictor,
+        reported_age
+    ) in MANUSCRIPT_PEAKS.items():
+
+        sub = peaks[
+            peaks["Predictor"]
+            == predictor
+        ].copy()
+
+        total = len(sub)
+
+        detected = sub[
+            sub["Detected"]
+        ].copy()
+
+        if detected.empty:
+
+            rows.append({
+
+                "Predictor":
+                    predictor,
+
+                "ManuscriptPeakAge":
+                    reported_age,
+
+                "AgeWindowMin":
+                    AGE_MIN,
+
+                "AgeWindowMax":
+                    AGE_MAX,
+
+                "N_conditions":
+                    total,
+
+                "N_detected":
+                    0,
+
+                "DetectionRate":
+                    0.0,
+
+                "N_within_5y":
+                    0,
+
+                "MatchRate_5y":
+                    0.0,
+
+                "MedianPeakAge":
+                    np.nan,
+
+                "PeakAge95CI_low":
+                    np.nan,
+
+                "PeakAge95CI_high":
+                    np.nan,
+
+                "MedianAbsoluteShift":
+                    np.nan,
+
+                "MaxAbsoluteShift":
+                    np.nan,
+
+                "Status":
+                    "NOT SUPPORTED",
+            })
+
+            continue
+
+        shifts = np.abs(
+            detected["PeakAge"]
+            - reported_age
+        )
+
+        within = (
+            shifts
+            <= PEAK_MATCH_YEARS
+        )
+
+        detection_rate = (
+            len(detected)
+            / max(total, 1)
+        )
+
+        match_rate = (
+            within.mean()
+        )
+
+        median_age = float(
+            np.median(
+                detected["PeakAge"]
+            )
+        )
+
+        ci_low, ci_high = (
+            np.percentile(
+                detected["PeakAge"],
+                [2.5, 97.5]
+            )
+        )
+
+        median_shift = float(
+            np.median(shifts)
+        )
+
+        max_shift = float(
+            np.max(shifts)
+        )
+
+        if (
+            detection_rate
+            >= ROBUST_DETECTION_RATE
+            and median_shift
+            <= ROBUST_MEDIAN_SHIFT_YEARS
+        ):
+
+            status = "CONFIRMED"
+
+        elif (
+            detection_rate
+            >= MODERATE_DETECTION_RATE
+            and median_shift
+            <= MODERATE_MEDIAN_SHIFT_YEARS
+        ):
+
+            status = "MODERATELY SUPPORTED"
+
+        else:
+
+            status = "NOT SUPPORTED"
+
+        rows.append({
+
+            "Predictor":
+                predictor,
+
+            "ManuscriptPeakAge":
+                reported_age,
+
+            "AgeWindowMin":
+                AGE_MIN,
+
+            "AgeWindowMax":
+                AGE_MAX,
+
+            "N_conditions":
+                total,
+
+            "N_detected":
+                len(detected),
+
+            "DetectionRate":
+                detection_rate,
+
+            "N_within_5y":
+                int(
+                    within.sum()
+                ),
+
+            "MatchRate_5y":
+                float(
+                    match_rate
+                ),
+
+            "MedianPeakAge":
+                median_age,
+
+            "PeakAge95CI_low":
+                float(
+                    ci_low
+                ),
+
+            "PeakAge95CI_high":
+                float(
+                    ci_high
+                ),
+
+            "MedianAbsoluteShift":
+                median_shift,
+
+            "MaxAbsoluteShift":
+                max_shift,
+
+            "Status":
+                status,
+        })
+
+    return pd.DataFrame(
+        rows
+    )
+
+
+# ================================================================
+# 21. CONDITION-LEVEL RESULTS
+# ================================================================
+
+def condition_level_results(
+    peaks
+):
+
+    rows = []
+
+    for _, r in peaks.iterrows():
+
+        predictor = r[
+            "Predictor"
+        ]
+
+        reported = (
+            MANUSCRIPT_PEAKS[
+                predictor
+            ]
+        )
+
+        if bool(
+            r["Detected"]
+        ):
+
+            shift = (
+                float(
+                    r["PeakAge"]
+                    - reported
+                )
+            )
+
+            abs_shift = abs(
+                shift
+            )
+
+            within = (
+                abs_shift
+                <= PEAK_MATCH_YEARS
+            )
+
+        else:
+
+            shift = np.nan
+            abs_shift = np.nan
+            within = False
+
+        rows.append({
+
+            **r.to_dict(),
+
+            "ManuscriptPeakAge":
+                reported,
+
+            "PeakAgeShift":
+                shift,
+
+            "AbsolutePeakAgeShift":
+                abs_shift,
+
+            "Within5Years":
+                within,
+        })
+
+    return pd.DataFrame(
+        rows
+    )
+
+
+# ================================================================
+# 22. PARAMETER SUMMARY
+# ================================================================
+
+def summarize_by_parameter(
+    condition_results
+):
+
+    rows = []
+
+    for (
+        predictor,
+        parameter
+    ), g in condition_results.groupby(
+        [
+            "Predictor",
+            "Parameter"
+        ],
+        dropna=False
+    ):
+
+        detected = g[
+            g["Detected"]
+        ]
+
+        shifts = (
+            detected[
+                "AbsolutePeakAgeShift"
+            ]
+            .dropna()
+        )
+
+        if len(detected):
+
+            detection = (
+                len(detected)
+                / len(g)
+            )
+
+            within = (
+                detected[
+                    "Within5Years"
+                ].mean()
+            )
+
+        else:
+
+            detection = 0.0
+            within = 0.0
+
+        if len(shifts):
+
+            median_shift = (
+                shifts.median()
+            )
+
+            max_shift = (
+                shifts.max()
+            )
+
+            worst_idx = (
+                shifts.idxmax()
+            )
+
+            worst_condition = (
+                g.loc[
+                    worst_idx,
+                    "Condition"
+                ]
+            )
+
+        else:
+
+            median_shift = np.nan
+            max_shift = np.nan
+            worst_condition = ""
+
+        rows.append({
+
+            "Predictor":
+                predictor,
+
+            "Parameter":
+                parameter,
+
+            "N_conditions":
+                len(g),
+
+            "DetectionRate":
+                detection,
+
+            "MatchRate_5y":
+                within,
+
+            "MedianAbsoluteShift":
+                median_shift,
+
+            "MaxAbsoluteShift":
+                max_shift,
+
+            "WorstCondition":
+                worst_condition,
+        })
+
+    return pd.DataFrame(
+        rows
+    )
+
+
+# ================================================================
+# 23. FIGURE: BASELINE CURVES
+# ================================================================
+
+def plot_baseline(
+    curves
+):
+
+    base = curves[
+        curves["Condition"]
+        == "baseline"
+    ]
+
+    if base.empty:
+        return
+
+    fig, ax = plt.subplots(
+        figsize=(10, 6)
+    )
+
+    for predictor in (
+        MANUSCRIPT_PEAKS
+    ):
+
+        c = base[
+            base["Predictor"]
+            == predictor
+        ].sort_values(
+            "Age"
+        )
+
+        if c.empty:
+            continue
+
+        ax.plot(
+            c["Age"],
+            c["Mean"],
+            linewidth=2.5,
+            label=predictor
+        )
+
+        ax.fill_between(
+            c["Age"],
+            c["CI_low"],
+            c["CI_high"],
+            alpha=0.20
+        )
+
+        ax.scatter(
+            c.loc[
+                c[
+                    "SignificantNegative"
+                ],
+                "Age"
+            ],
+
+            c.loc[
+                c[
+                    "SignificantNegative"
+                ],
+                "Mean"
+            ],
+
+            s=35
+        )
+
+        ax.axvline(
+            MANUSCRIPT_PEAKS[
+                predictor
+            ],
+            linestyle="--",
+            alpha=0.5
+        )
+
+    ax.axhline(
+        0,
+        linewidth=1
+    )
+
+    ax.set_xlim(
+        AGE_MIN,
+        AGE_MAX
+    )
+
+    ax.set_xlabel(
+        "Age (years)"
+    )
+
+    ax.set_ylabel(
+        "Indirect mediation effect"
+    )
+
+    ax.set_title(
+        "Baseline mediation curves "
+        f"({AGE_MIN:.0f}-{AGE_MAX:.0f} years)"
+    )
+
+    ax.legend(
+        frameon=False
+    )
+
+    fig.tight_layout()
+
+    fig.savefig(
+        os.path.join(
+            FIG_DIR,
+            "baseline_peak_claims.png"
+        ),
+        dpi=400
+    )
+
+    plt.close(fig)
+
+
+# ================================================================
+# 24. PEAK DISTRIBUTION
+# ================================================================
+
+def plot_peak_distribution(
+    condition_results
+):
+
+    fig, axes = plt.subplots(
+        1,
+        2,
+        figsize=(12, 5)
+    )
+
+    for ax, predictor in zip(
+        axes,
+        MANUSCRIPT_PEAKS
+    ):
+
+        sub = condition_results[
+            (
+                condition_results[
+                    "Predictor"
+                ]
+                == predictor
+            )
+            &
+            condition_results[
+                "Detected"
+            ]
+        ]
+
+        if sub.empty:
+            continue
+
+        bins = np.arange(
+            AGE_MIN - 2.5,
+            AGE_MAX + 7.5,
+            5
+        )
+
+        ax.hist(
+            sub["PeakAge"],
+            bins=bins,
+            alpha=0.75
+        )
+
+        ax.axvline(
+            MANUSCRIPT_PEAKS[
+                predictor
+            ],
+            linestyle="--",
+            linewidth=2,
+            label=(
+                "manuscript = "
+                f"{MANUSCRIPT_PEAKS[predictor]:.1f}"
+            )
+        )
+
+        ax.set_xlim(
+            AGE_MIN,
+            AGE_MAX
+        )
+
+        ax.set_title(
+            predictor
+        )
+
+        ax.set_xlabel(
+            "Detected peak age (years)"
+        )
+
+        ax.set_ylabel(
+            "Sensitivity conditions"
+        )
+
+        ax.legend(
+            frameon=False
+        )
+
+    fig.tight_layout()
+
+    fig.savefig(
+        os.path.join(
+            FIG_DIR,
+            "manuscript_peak_age_distributions.png"
+        ),
+        dpi=400
+    )
+
+    plt.close(fig)
+
+
+# ================================================================
+# 25. MAIN
+# ================================================================
+
+def main():
+
+    subjects, curves, peaks = (
+        run_all_conditions()
+    )
+
+    # ------------------------------------------------------------
+    # Save raw data
+    # ------------------------------------------------------------
+
+    subjects.to_csv(
+        os.path.join(
+            TABLE_DIR,
+            "sensitivity_subject_dataset.csv"
+        ),
+        index=False
+    )
+
+    curves.to_csv(
+        os.path.join(
+            TABLE_DIR,
+            "sensitivity_age_curves.csv"
+        ),
+        index=False
+    )
+
+    peaks.to_csv(
+        os.path.join(
+            TABLE_DIR,
+            "sensitivity_peak_detections.csv"
+        ),
+        index=False
+    )
+
+    # ------------------------------------------------------------
+    # Summaries
+    # ------------------------------------------------------------
+
+    condition_results = (
+        condition_level_results(
+            peaks
+        )
+    )
+
+    manuscript_summary = (
+        summarize_manuscript_peak(
+            peaks
+        )
+    )
+
+    parameter_summary = (
+        summarize_by_parameter(
+            condition_results
+        )
+    )
+
+    condition_results.to_csv(
+        os.path.join(
+            TABLE_DIR,
+            "manuscript_peak_condition_results.csv"
+        ),
+        index=False
+    )
+
+    manuscript_summary.to_csv(
+        os.path.join(
+            TABLE_DIR,
+            "manuscript_peak_confirmation_summary.csv"
+        ),
+        index=False
+    )
+
+    parameter_summary.to_csv(
+        os.path.join(
+            TABLE_DIR,
+            "manuscript_peak_parameter_summary.csv"
+        ),
+        index=False
+    )
+
+    # ------------------------------------------------------------
+    # Figures
+    # ------------------------------------------------------------
+
+    plot_baseline(
+        curves
+    )
+
+    plot_peak_distribution(
+        condition_results
+    )
+
+    # ------------------------------------------------------------
+    # Console output
+    # ------------------------------------------------------------
+
+    print()
+    print("=" * 78)
+    print("MANUSCRIPT PEAK CONFIRMATION")
+    print("=" * 78)
+
+    print(
+        f"Age window: "
+        f"{AGE_MIN:.1f}-{AGE_MAX:.1f} years"
+    )
+
+    print()
+
+    print(
+        manuscript_summary.to_string(
+            index=False
+        )
+    )
+
+    print()
+    print(
+        "Parameter-family sensitivity:"
+    )
+
+    print(
+        parameter_summary.to_string(
+            index=False
+        )
+    )
+
+    print()
+    print("=" * 78)
+    print("DECISION RULE")
+    print("=" * 78)
+
+    print(
+        f"CONFIRMED = detected in >= "
+        f"{ROBUST_DETECTION_RATE:.0%} "
+        f"of conditions AND median "
+        f"absolute shift <= "
+        f"{ROBUST_MEDIAN_SHIFT_YEARS:g} years."
+    )
+
+    print(
+        f"MODERATELY SUPPORTED = detected "
+        f"in >= {MODERATE_DETECTION_RATE:.0%} "
+        f"AND median absolute shift <= "
+        f"{MODERATE_MEDIAN_SHIFT_YEARS:g} years."
+    )
+
+    print(
+        "Otherwise = NOT SUPPORTED."
+    )
+
+    print()
+    print(
+        "Outputs:",
+        os.path.abspath(
+            SAVE_DIR
+        )
+    )
+
+
+# ================================================================
+# RUN
+# ================================================================
+
+if __name__ == "__main__":
+    main()
+
+
+# ================================================================
+# COMPACT PEAK SENSITIVITY / ROBUSTNESS ANALYSIS
+#
+# PURPOSE
+# -------
+# Produce a compact, publication-ready table showing, for EVERY
+# parameter tested:
+#
+#   - parameter values tested
+#   - number of tested values
+#   - proportion of conditions with a detected peak
+#   - proportion within ± MATCH_WINDOW years
+#   - proportion FDR-supported
+#   - observed peak-age range
+#   - maximum displacement from  peak
+#
+
+#
+# PRIMARY QUESTION
+# ----------------
+# Are the reported peaks robust to parameter changes?
+#
+# PUBLICATION TABLE
+# -----------------
+# Designed to be small enough for a Word manuscript table and
+# suitable for a Nature/Science-style presentation.
+#
+# Publication columns:
+#
+#   Peak
+#   Parameter
+#   Tested range
+#   N values
+#   Detected
+#   Within ±5 y
+#   FDR
+#   Peak range (y)
+#   Max Δ (y)
+#
+# FULL ANALYSIS
+# -------------
+# The complete statistics are still retained in:
+#
+#   - FULL CSV
+#   - RANKED CSV
+#   - Excel workbook
+#   - TXT summary
+#
+# ================================================================
+
+
+# ================================================================
+# 1. PACKAGES
+# ================================================================
+
+import os
+import warnings
+
+import numpy as np
+import pandas as pd
+
+
+# ================================================================
+# 2. SETTINGS
+# ================================================================
+
+RESULTS_DIR = os.path.join(
+    "BrainBodyEnergy_PeakRobustness_FAST",
+    "tables"
+)
+
+OUTPUT_DIR = os.path.join(
+    "BrainBodyEnergy_PeakRobustness_FAST",
+    "reviewer_peak_sensitivity"
+)
+
+os.makedirs(
+    OUTPUT_DIR,
+    exist_ok=True
+)
+
+
+# ------------------------------------------------
+# Input file
+# ------------------------------------------------
+
+CONDITION_FILE = os.path.join(
+    RESULTS_DIR,
+    "manuscript_peak_condition_results.csv"
+)
+
+
+# ------------------------------------------------
+# Manuscript peak locations
+# ------------------------------------------------
+#
+# These are the peak ages reported in the main
+# manuscript.
+#
+# They are deliberately displayed in bold in the
+# compact publication table.
+# ------------------------------------------------
+
+MANUSCRIPT_PEAKS = {
+
+    "BrainBody": 57.5,
+
+    "PredictiveModel": 22.5,
+
+}
+
+
+# ------------------------------------------------
+# Peak matching criterion
+# ------------------------------------------------
+
+MATCH_WINDOW = 5.0
+
+
+# ------------------------------------------------
+# FDR criterion
+# ------------------------------------------------
+
+FDR_THRESHOLD = 0.05
+
+
+# ------------------------------------------------
+# Descriptive robustness thresholds
+# ------------------------------------------------
+
+HIGH_ROBUSTNESS = 0.90
+
+MODERATE_ROBUSTNESS = 0.70
+
+LOW_ROBUSTNESS = 0.50
+
+
+# ================================================================
+# 3. DISPLAY NAMES
+# ================================================================
+
+def predictor_name(predictor):
+
+    names = {
+
+        "BrainBody":
+            "Brain–Body",
+
+        "PredictiveModel":
+            "Predictive Model",
+
+        "ActiveInference":
+            "Predictive Model",
+
+        "Active Inference":
+            "Predictive Model",
+
+    }
+
+    return names.get(
+        predictor,
+        str(predictor)
+    )
+
+
+# ================================================================
+# 4. LOAD DATA
+# ================================================================
+
+def load_data():
+
+    print()
+    print("=" * 80)
+    print("LOADING PEAK SENSITIVITY DATA")
+    print("=" * 80)
+
+    if not os.path.exists(CONDITION_FILE):
+
+        raise FileNotFoundError(
+            "\nInput file not found:\n"
+            f"{os.path.abspath(CONDITION_FILE)}"
+        )
+
+    df = pd.read_csv(
+        CONDITION_FILE
+    )
+
+    print(
+        f"Loaded {len(df):,} condition-level records."
+    )
+
+    return df
+
+
+# ================================================================
+# 5. VALIDATE DATA
+# ================================================================
+
+def validate_data(df):
+
+    required = [
+
+        "Predictor",
+        "Parameter",
+        "Condition",
+        "Detected",
+        "PeakAge",
+        "ManuscriptPeakAge",
+        "p_FDR",
+
+    ]
+
+    missing = [
+
+        column
+
+        for column in required
+
+        if column not in df.columns
+
+    ]
+
+    if missing:
+
+        raise ValueError(
+            "\nMissing required columns:\n\n"
+            + "\n".join(
+                f"  - {column}"
+                for column in missing
+            )
+        )
+
+    print()
+    print("=" * 80)
+    print("INPUT VALIDATION")
+    print("=" * 80)
+
+    print("All required columns are present.")
+
+
+# ================================================================
+# 6. PREPARE DATA
+# ================================================================
+
+def prepare_data(df):
+
+    df = df.copy()
+
+
+    # ------------------------------------------------------------
+    # Standardize predictor names
+    # ------------------------------------------------------------
+
+    df["Predictor"] = (
+
+        df["Predictor"]
+        .astype(str)
+        .str.strip()
+
+        .replace({
+
+            "ActiveInference":
+                "PredictiveModel",
+
+            "Active Inference":
+                "PredictiveModel",
+
+            "Predictive Model":
+                "PredictiveModel",
+
+        })
+
+    )
+
+
+    # ------------------------------------------------------------
+    # Standardize parameter names
+    # ------------------------------------------------------------
+
+    df["Parameter"] = (
+
+        df["Parameter"]
+        .astype(str)
+        .str.strip()
+
+    )
+
+
+    # ------------------------------------------------------------
+    # Numeric columns
+    # ------------------------------------------------------------
+
+    numeric_columns = [
+
+        "PeakAge",
+        "ManuscriptPeakAge",
+        "SensitivityValue",
+        "p",
+        "p_FDR",
+        "PeakCI_low",
+        "PeakCI_high",
+        "N",
+
+    ]
+
+    for column in numeric_columns:
+
+        if column in df.columns:
+
+            df[column] = pd.to_numeric(
+                df[column],
+                errors="coerce"
+            )
+
+
+    # ------------------------------------------------------------
+    # Standardize Detected
+    # ------------------------------------------------------------
+
+    if df["Detected"].dtype != bool:
+
+        df["Detected"] = (
+
+            df["Detected"]
+            .astype(str)
+            .str.strip()
+            .str.lower()
+            .isin({
+
+                "true",
+                "1",
+                "yes",
+                "y",
+                "detected",
+                "peak",
+
+            })
+
+        )
+
+
+    # ------------------------------------------------------------
+    # Replace manuscript peak values with the explicitly
+    # defined manuscript values above.
+    # ------------------------------------------------------------
+
+    df["ManuscriptPeakAge"] = (
+
+        df["Predictor"]
+        .map(MANUSCRIPT_PEAKS)
+        .fillna(
+            df["ManuscriptPeakAge"]
+        )
+
+    )
+
+
+    # ------------------------------------------------------------
+    # Peak displacement
+    # ------------------------------------------------------------
+
+    df["PeakShift"] = (
+
+        df["PeakAge"]
+        - df["ManuscriptPeakAge"]
+
+    )
+
+
+    df["AbsolutePeakShift"] = (
+
+        df["PeakShift"]
+        .abs()
+
+    )
+
+
+    # ------------------------------------------------------------
+    # Peak detected within manuscript ±5 years
+    # ------------------------------------------------------------
+
+    df["WithinWindow"] = (
+
+        df["Detected"]
+
+        & df["PeakAge"].notna()
+
+        & (
+
+            df["AbsolutePeakShift"]
+            <= MATCH_WINDOW
+
+        )
+
+    )
+
+
+    # ------------------------------------------------------------
+    # FDR-supported peak
+    # ------------------------------------------------------------
+
+    df["FDRSupported"] = (
+
+        df["Detected"]
+
+        & df["p_FDR"].notna()
+
+        & (
+
+            df["p_FDR"]
+            < FDR_THRESHOLD
+
+        )
+
+    )
+
+
+    # ------------------------------------------------------------
+    # Robust peak
+    #
+    # A robust peak is:
+    #
+    #   1. detected
+    #   2. within ±5 years
+    #   3. FDR-supported
+    # ------------------------------------------------------------
+
+    df["RobustPeak"] = (
+
+        df["WithinWindow"]
+
+        & df["FDRSupported"]
+
+    )
+
+
+    return df
+
+
+# ================================================================
+# 7. PARAMETER ORDER
+# ================================================================
+
+PREFERRED_PARAMETER_ORDER = [
+
+    "K_BODY",
+    "K_ENERGY",
+    "COUPLING_SCALE",
+
+    "G_AMPLITUDE",
+    "G_PEAK_AGE",
+    "G_WIDTH",
+
+    "NOISE_BASE",
+    "NOISE_AGE_SLOPE",
+
+    "DECAY_BASE",
+    "DECAY_AGE_SLOPE",
+
+    "ENERGY_PRODUCTION_BASE",
+    "ENERGY_PRODUCTION_HEART",
+    "ENERGY_CONSUMPTION",
+
+    "HEART_FREQ",
+    "HEART_PHASE_NOISE",
+
+    "INTRINSIC_GROWTH",
+
+    "OMEGA_LOW",
+    "OMEGA_HIGH",
+
+    "DT",
+    "T",
+
+    "SW_K",
+    "SW_P",
+
+    "RANDOM_THRESHOLD",
+    "NETWORK_SIZE",
+
+]
+
+
+def get_parameter_order(df):
+
+    unique_parameters = (
+
+        df["Parameter"]
+        .dropna()
+        .unique()
+        .tolist()
+
+    )
+
+
+    existing = [
+
+        parameter
+
+        for parameter
+        in PREFERRED_PARAMETER_ORDER
+
+        if parameter in unique_parameters
+
+    ]
+
+
+    remaining = [
+
+        parameter
+
+        for parameter
+        in unique_parameters
+
+        if parameter not in existing
+
+    ]
+
+
+    return existing + sorted(
+        remaining
+    )
+
+
+# ================================================================
+# 8. ROBUSTNESS CLASSIFICATION
+# ================================================================
+
+def classify_robustness(rate):
+
+    if pd.isna(rate):
+
+        return "Not evaluable"
+
+
+    if rate >= HIGH_ROBUSTNESS:
+
+        return "Highly robust"
+
+
+    if rate >= MODERATE_ROBUSTNESS:
+
+        return "Robust"
+
+
+    if rate >= LOW_ROBUSTNESS:
+
+        return "Moderately sensitive"
+
+
+    return "Sensitive"
+
+
+# ================================================================
+# 9. PARAMETER-LEVEL ANALYSIS
+# ================================================================
+
+def analyze_parameter(group):
+
+    total = len(group)
+
+
+    detected = group[
+        group["Detected"]
+    ]
+
+
+    within = group[
+        group["WithinWindow"]
+    ]
+
+
+    fdr = group[
+        group["FDRSupported"]
+    ]
+
+
+    robust = group[
+        group["RobustPeak"]
+    ]
+
+
+    # ------------------------------------------------------------
+    # Detected peak statistics
+    # ------------------------------------------------------------
+
+    if len(detected):
+
+        median_peak = (
+            detected["PeakAge"]
+            .median()
+        )
+
+        mean_peak = (
+            detected["PeakAge"]
+            .mean()
+        )
+
+        min_peak = (
+            detected["PeakAge"]
+            .min()
+        )
+
+        max_peak = (
+            detected["PeakAge"]
+            .max()
+        )
+
+        median_shift = (
+            detected["AbsolutePeakShift"]
+            .median()
+        )
+
+        mean_shift = (
+            detected["AbsolutePeakShift"]
+            .mean()
+        )
+
+        max_shift = (
+            detected["AbsolutePeakShift"]
+            .max()
+        )
+
+    else:
+
+        median_peak = np.nan
+        mean_peak = np.nan
+
+        min_peak = np.nan
+        max_peak = np.nan
+
+        median_shift = np.nan
+        mean_shift = np.nan
+        max_shift = np.nan
+
+
+    # ------------------------------------------------------------
+    # Tested parameter values
+    # ------------------------------------------------------------
+
+    if "SensitivityValue" in group.columns:
+
+        sensitivity_values = (
+
+            group["SensitivityValue"]
+            .dropna()
+            .unique()
+
+        )
+
+    else:
+
+        sensitivity_values = np.array([])
+
+
+    if len(sensitivity_values):
+
+        sensitivity_values = np.sort(
+            sensitivity_values
+        )
+
+        parameter_min = (
+            sensitivity_values.min()
+        )
+
+        parameter_max = (
+            sensitivity_values.max()
+        )
+
+        n_parameter_values = (
+            len(sensitivity_values)
+        )
+
+        parameter_range = (
+
+            f"{parameter_min:g}–"
+            f"{parameter_max:g}"
+
+        )
+
+    else:
+
+        parameter_min = np.nan
+        parameter_max = np.nan
+        n_parameter_values = np.nan
+
+        parameter_range = "NA"
+
+
+    # ------------------------------------------------------------
+    # Rates
+    # ------------------------------------------------------------
+
+    detection_rate = (
+
+        len(detected) / total
+
+        if total
+
+        else np.nan
+
+    )
+
+
+    within_rate = (
+
+        len(within) / total
+
+        if total
+
+        else np.nan
+
+    )
+
+
+    fdr_rate = (
+
+        len(fdr) / total
+
+        if total
+
+        else np.nan
+
+    )
+
+
+    robust_rate = (
+
+        len(robust) / total
+
+        if total
+
+        else np.nan
+
+    )
+
+
+    # ------------------------------------------------------------
+    # Robustness classification
+    # ------------------------------------------------------------
+
+    sensitivity_class = classify_robustness(
+        robust_rate
+    )
+
+
+    # ------------------------------------------------------------
+    # Peak-location sensitivity
+    # ------------------------------------------------------------
+
+    if pd.notna(max_shift):
+
+        if max_shift <= 2:
+
+            location_effect = "Minimal"
+
+        elif max_shift <= MATCH_WINDOW:
+
+            location_effect = "Small"
+
+        elif max_shift <= 10:
+
+            location_effect = "Moderate"
+
+        else:
+
+            location_effect = "Large"
+
+    else:
+
+        location_effect = "Not evaluable"
+
+
+    return {
+
+        "N_conditions":
+            total,
+
+        "N_parameter_values":
+            n_parameter_values,
+
+        "Parameter_min":
+            parameter_min,
+
+        "Parameter_max":
+            parameter_max,
+
+        "Parameter_range":
+            parameter_range,
+
+        "N_detected":
+            len(detected),
+
+        "Detection_rate":
+            detection_rate,
+
+        "N_within_5y":
+            len(within),
+
+        "Within_5y_rate":
+            within_rate,
+
+        "N_FDR_supported":
+            len(fdr),
+
+        "FDR_support_rate":
+            fdr_rate,
+
+        "N_robust":
+            len(robust),
+
+        "Robust_rate":
+            robust_rate,
+
+        "Median_peak_age":
+            median_peak,
+
+        "Mean_peak_age":
+            mean_peak,
+
+        "Peak_age_min":
+            min_peak,
+
+        "Peak_age_max":
+            max_peak,
+
+        "Median_absolute_shift":
+            median_shift,
+
+        "Mean_absolute_shift":
+            mean_shift,
+
+        "Maximum_absolute_shift":
+            max_shift,
+
+        "Peak_location_effect":
+            location_effect,
+
+        "Robustness":
+            sensitivity_class,
+
+    }
+
+
+# ================================================================
+# 10. BUILD FULL PARAMETER TABLE
+# ================================================================
+
+def create_full_parameter_table(df):
+
+    rows = []
+
+    parameter_order = get_parameter_order(
+        df
+    )
+
+
+    for predictor in MANUSCRIPT_PEAKS:
+
+        predictor_data = df[
+            df["Predictor"]
+            == predictor
+        ]
+
+
+        for parameter in parameter_order:
+
+            group = predictor_data[
+                predictor_data["Parameter"]
+                == parameter
+            ]
+
+
+            if group.empty:
+
+                continue
+
+
+            result = analyze_parameter(
+                group
+            )
+
+
+            row = {
+
+                "Peak":
+                    predictor_name(
+                        predictor
+                    ),
+
+                "Predictor":
+                    predictor,
+
+                "Manuscript_peak_year":
+                    MANUSCRIPT_PEAKS[
+                        predictor
+                    ],
+
+                "Parameter":
+                    parameter,
+
+            }
+
+
+            row.update(
+                result
+            )
+
+
+            rows.append(
+                row
+            )
+
+
+    table = pd.DataFrame(
+        rows
+    )
+
+
+    parameter_order_map = {
+
+        parameter: index
+
+        for index, parameter
+        in enumerate(parameter_order)
+
+    }
+
+
+    table["_parameter_order"] = (
+
+        table["Parameter"]
+        .map(parameter_order_map)
+
+    )
+
+
+    predictor_order = {
+
+        predictor_name(predictor):
+            index
+
+        for index, predictor
+        in enumerate(MANUSCRIPT_PEAKS)
+
+    }
+
+
+    table["_predictor_order"] = (
+
+        table["Peak"]
+        .map(predictor_order)
+
+    )
+
+
+    table = table.sort_values(
+
+        [
+            "_predictor_order",
+            "_parameter_order"
+
+        ]
+
+    )
+
+
+    table = table.drop(
+
+        columns=[
+
+            "_parameter_order",
+            "_predictor_order",
+
+        ]
+
+    )
+
+
+    return table
+
+
+# ================================================================
+# 11. CREATE COMPACT PUBLICATION TABLE
+# ================================================================
+
+def create_compact_table(full_table):
+
+    compact = full_table[
+
+        [
+
+            "Peak",
+
+            "Manuscript_peak_year",
+
+            "Parameter",
+
+            "Parameter_range",
+
+            "N_parameter_values",
+
+            "Detection_rate",
+
+            "Within_5y_rate",
+
+            "FDR_support_rate",
+
+            "Peak_age_min",
+
+            "Peak_age_max",
+
+            "Maximum_absolute_shift",
+
+        ]
+
+    ].copy()
+
+
+    # ------------------------------------------------------------
+    # Rename for publication
+    # ------------------------------------------------------------
+
+    compact = compact.rename(
+
+        columns={
+
+            "Peak":
+                "Peak",
+
+            "Manuscript_peak_year":
+                "Reference peak (y)",
+
+            "Parameter":
+                "Parameter",
+
+            "Parameter_range":
+                "Tested range",
+
+            "N_parameter_values":
+                "N values",
+
+            "Detection_rate":
+                "Detected",
+
+            "Within_5y_rate":
+                "Within ±5 y",
+
+            "FDR_support_rate":
+                "FDR",
+
+            "Peak_age_min":
+                "Peak range min",
+
+            "Peak_age_max":
+                "Peak range max",
+
+            "Maximum_absolute_shift":
+                "Max Δ (y)",
+
+        }
+
+    )
+
+
+    return compact
+
+
+# ================================================================
+# 12. FORMAT COMPACT TABLE FOR PUBLICATION
+# ================================================================
+
+def format_publication_table(
+    compact,
+    markdown=False
+):
+
+    table = compact.copy()
+
+
+    # ------------------------------------------------------------
+    # Create compact Peak label.
+    #
+    # The manuscript peak age is placed directly in the Peak
+    # column and will be bold in Markdown.
+    # ------------------------------------------------------------
+
+    if markdown:
+
+        table["Peak"] = table.apply(
+
+            lambda row:
+
+            (
+                f"**{row['Peak']} "
+                f"({row['Reference peak (y)']:.1f} y)**"
+            ),
+
+            axis=1
+
+        )
+
+    else:
+
+        table["Peak"] = table.apply(
+
+            lambda row:
+
+            (
+                f"{row['Peak']} "
+                f"({row['Reference peak (y)']:.1f} y)"
+            ),
+
+            axis=1
+
+        )
+
+
+    # ------------------------------------------------------------
+    # Percentages
+    # ------------------------------------------------------------
+
+    for column in [
+
+        "Detected",
+        "Within ±5 y",
+        "FDR",
+
+    ]:
+
+        table[column] = table[column].map(
+
+            lambda value:
+
+            f"{value:.0%}"
+
+            if pd.notna(value)
+
+            else "NA"
+
+        )
+
+
+    # ------------------------------------------------------------
+    # Tested range
+    # ------------------------------------------------------------
+
+    table["Tested range"] = (
+
+        table["Tested range"]
+        .fillna("NA")
+        .astype(str)
+
+    )
+
+
+    # ------------------------------------------------------------
+    # N values
+    # ------------------------------------------------------------
+
+    table["N values"] = table["N values"].map(
+
+        lambda value:
+
+        f"{int(value)}"
+
+        if pd.notna(value)
+
+        else "NA"
+
+    )
+
+
+    # ------------------------------------------------------------
+    # Peak range
+    # ------------------------------------------------------------
+
+    def format_peak_range(row):
+
+        low = row["Peak range min"]
+
+        high = row["Peak range max"]
+
+
+        if pd.isna(low) or pd.isna(high):
+
+            return "NA"
+
+
+        return (
+            f"{low:.1f}–{high:.1f}"
+        )
+
+
+    table["Peak range (y)"] = table.apply(
+
+        format_peak_range,
+
+        axis=1
+
+    )
+
+
+    # ------------------------------------------------------------
+    # Maximum displacement
+    # ------------------------------------------------------------
+
+    table["Max Δ (y)"] = (
+
+        table["Max Δ (y)"]
+
+        .map(
+
+            lambda value:
+
+            f"{value:.1f}"
+
+            if pd.notna(value)
+
+            else "NA"
+
+        )
+
+    )
+
+
+    # ------------------------------------------------------------
+    # Remove intermediate columns
+    # ------------------------------------------------------------
+
+    table = table[
+
+        [
+
+            "Peak",
+
+            "Parameter",
+
+            "Tested range",
+
+            "N values",
+
+            "Detected",
+
+            "Within ±5 y",
+
+            "FDR",
+
+            "Peak range (y)",
+
+            "Max Δ (y)",
+
+        ]
+
+    ]
+
+
+    return table
+
+
+# ================================================================
+# 13. CREATE RANKED SENSITIVITY TABLE
+# ================================================================
+
+def rank_parameter_sensitivity(
+    full_table
+):
+
+    ranked = full_table.copy()
+
+
+    # Lower robustness = greater sensitivity.
+    # Greater maximum displacement = greater sensitivity.
+
+    ranked["Sensitivity_rank"] = (
+
+        ranked.groupby("Peak")[
+            "Robust_rate"
+        ]
+
+        .rank(
+
+            ascending=True,
+
+            method="min"
+
+        )
+
+    )
+
+
+    ranked = ranked.sort_values(
+
+        [
+
+            "Peak",
+            "Robust_rate",
+            "Maximum_absolute_shift",
+
+        ],
+
+        ascending=[
+
+            True,
+            True,
+            False,
+
+        ]
+
+    )
+
+
+    return ranked
+
+
+# ================================================================
+# 14. CREATE OVERALL PEAK SUMMARY
+# ================================================================
+
+def create_peak_summary(df):
+
+    rows = []
+
+
+    for predictor in MANUSCRIPT_PEAKS:
+
+        sub = df[
+            df["Predictor"]
+            == predictor
+        ]
+
+
+        total = len(sub)
+
+
+        detected = sub[
+            sub["Detected"]
+        ]
+
+
+        robust = sub[
+            sub["RobustPeak"]
+        ]
+
+
+        if len(detected):
+
+            median_peak = (
+                detected["PeakAge"]
+                .median()
+            )
+
+            median_shift = (
+                detected["AbsolutePeakShift"]
+                .median()
+            )
+
+            maximum_shift = (
+                detected["AbsolutePeakShift"]
+                .max()
+            )
+
+            peak_min = (
+                detected["PeakAge"]
+                .min()
+            )
+
+            peak_max = (
+                detected["PeakAge"]
+                .max()
+            )
+
+        else:
+
+            median_peak = np.nan
+            median_shift = np.nan
+            maximum_shift = np.nan
+            peak_min = np.nan
+            peak_max = np.nan
+
+
+        rows.append({
+
+            "Peak":
+                predictor_name(
+                    predictor
+                ),
+
+            "Reference_peak_y":
+                MANUSCRIPT_PEAKS[
+                    predictor
+                ],
+
+            "N_conditions":
+                total,
+
+            "Detection_rate":
+                (
+                    len(detected) / total
+                    if total
+                    else np.nan
+                ),
+
+            "Robust_rate":
+                (
+                    len(robust) / total
+                    if total
+                    else np.nan
+                ),
+
+            "Median_peak_y":
+                median_peak,
+
+            "Median_absolute_shift_y":
+                median_shift,
+
+            "Maximum_absolute_shift_y":
+                maximum_shift,
+
+            "Peak_range_y":
+                (
+                    f"{peak_min:.2f}–"
+                    f"{peak_max:.2f}"
+                )
+                if pd.notna(peak_min)
+                else "NA",
+
+        })
+
+
+    return pd.DataFrame(
+        rows
+    )
+
+
+# ================================================================
+# 15. PRINT COMPACT TABLE
+# ================================================================
+
+def print_publication_table(
+    compact
+):
+
+    print()
+    print("=" * 120)
+    print("COMPACT PUBLICATION PEAK ROBUSTNESS TABLE")
+    print("=" * 120)
+
+
+    table = format_publication_table(
+        compact,
+        markdown=False
+    )
+
+
+    print(
+        table.to_string(
+            index=False
+        )
+    )
+
+
+# ================================================================
+# 16. SAVE MARKDOWN TABLE
+# ================================================================
+
+def save_markdown_table(
+    compact
+):
+
+    table = format_publication_table(
+        compact,
+        markdown=True
+    )
+
+
+    output = os.path.join(
+
+        OUTPUT_DIR,
+
+        "Peak_parameter_sensitivity_PUBLICATION.md"
+
+    )
+
+
+    # ------------------------------------------------------------
+    # Table title / legend
+    # ------------------------------------------------------------
+
+    lines = [
+
+        "# Robustness of reported peak ages to parameter variation",
+
+        "",
+
+        (
+            "The manuscript peak age is shown in **bold**. "
+            "Detected = proportion of tested conditions with a "
+            "detected peak; Within ±5 y = proportion within ±5 years "
+            "of the manuscript peak; FDR = proportion of tested "
+            "conditions with FDR-supported peaks. Peak range shows "
+            "the minimum–maximum detected peak age across the tested "
+            "parameter values."
+        ),
+
+        "",
+
+        table.to_markdown(
+            index=False
+        ),
+
+        "",
+
+        (
+            f"Peak reproducibility was evaluated using a ±"
+            f"{MATCH_WINDOW:g}-year matching window and "
+            f"FDR < {FDR_THRESHOLD:g}."
+        ),
+
+    ]
+
+
+    with open(
+        output,
+        "w",
+        encoding="utf-8"
+    ) as file:
+
+        file.write(
+            "\n".join(lines)
+        )
+
+
+    print()
+    print(
+        "Publication Markdown table:"
+    )
+
+    print(
+        os.path.abspath(
+            output
+        )
+    )
+
+
+# ================================================================
+# 17. SAVE WORD-FRIENDLY CSV
+# ================================================================
+
+def save_word_csv(
+    compact
+):
+
+    table = format_publication_table(
+        compact,
+        markdown=False
+    )
+
+
+    output = os.path.join(
+
+        OUTPUT_DIR,
+
+        "Peak_parameter_sensitivity_WORD.csv"
+
+    )
+
+
+    table.to_csv(
+
+        output,
+
+        index=False
+
+    )
+
+
+    print()
+    print(
+        "Word-friendly CSV:"
+    )
+
+    print(
+        os.path.abspath(
+            output
+        )
+    )
+
+
+# ================================================================
+# 18. SAVE FULL TABLES + EXCEL
+# ================================================================
+
+def save_tables(
+
+    full_table,
+
+    compact,
+
+    ranked,
+
+    peak_summary
+
+):
+
+    # ------------------------------------------------------------
+    # Full numerical CSV
+    # ------------------------------------------------------------
+
+    full_file = os.path.join(
+
+        OUTPUT_DIR,
+
+        "Peak_parameter_sensitivity_FULL.csv"
+
+    )
+
+
+    full_table.to_csv(
+
+        full_file,
+
+        index=False
+
+    )
+
+
+    # ------------------------------------------------------------
+    # Compact numerical CSV
+    # ------------------------------------------------------------
+
+    compact_file = os.path.join(
+
+        OUTPUT_DIR,
+
+        "Peak_parameter_sensitivity_REVIEWER.csv"
+
+    )
+
+
+    compact.to_csv(
+
+        compact_file,
+
+        index=False
+
+    )
+
+
+    # ------------------------------------------------------------
+    # Ranked sensitivity CSV
+    # ------------------------------------------------------------
+
+    ranked_file = os.path.join(
+
+        OUTPUT_DIR,
+
+        "Peak_parameter_sensitivity_RANKED.csv"
+
+    )
+
+
+    ranked.to_csv(
+
+        ranked_file,
+
+        index=False
+
+    )
+
+
+    # ------------------------------------------------------------
+    # Excel workbook
+    # ------------------------------------------------------------
+
+    excel_file = os.path.join(
+
+        OUTPUT_DIR,
+
+        "Peak_parameter_sensitivity_REVIEWER.xlsx"
+
+    )
+
+
+    try:
+
+        with pd.ExcelWriter(
+
+            excel_file,
+
+            engine="openpyxl"
+
+        ) as writer:
+
+            # ----------------------------------------------------
+            # Publication-style table
+            # ----------------------------------------------------
+
+            publication = format_publication_table(
+
+                compact,
+
+                markdown=False
+
+            )
+
+
+            publication.to_excel(
+
+                writer,
+
+                sheet_name="Publication_Table",
+
+                index=False
+
+            )
+
+
+            # ----------------------------------------------------
+            # Ranked analysis
+            # ----------------------------------------------------
+
+            ranked.to_excel(
+
+                writer,
+
+                sheet_name="Parameter_Ranking",
+
+                index=False
+
+            )
+
+
+            # ----------------------------------------------------
+            # Overall peak summary
+            # ----------------------------------------------------
+
+            peak_summary.to_excel(
+
+                writer,
+
+                sheet_name="Peak_Summary",
+
+                index=False
+
+            )
+
+
+            # ----------------------------------------------------
+            # Full statistics
+            # ----------------------------------------------------
+
+            full_table.to_excel(
+
+                writer,
+
+                sheet_name="Full_Statistics",
+
+                index=False
+
+            )
+
+
+        print()
+        print(
+            "Excel workbook:"
+        )
+
+        print(
+            os.path.abspath(
+                excel_file
+            )
+        )
+
+
+    except Exception as exc:
+
+        print()
+        print(
+            "WARNING: Excel workbook could not be created."
+        )
+
+        print(
+            exc
+        )
+
+
+# ================================================================
+# 19. WRITE REVIEWER SUMMARY
+# ================================================================
+
+def write_reviewer_summary(
+    full_table
+):
+
+    output = os.path.join(
+
+        OUTPUT_DIR,
+
+        "Reviewer_peak_robustness_summary.txt"
+
+    )
+
+
+    lines = []
+
+
+    lines.append(
+        "ROBUSTNESS OF REPORTED PEAK AGES TO PARAMETER VARIATION"
+    )
+
+    lines.append(
+        "=" * 70
+    )
+
+    lines.append("")
+
+
+    for predictor in MANUSCRIPT_PEAKS:
+
+        peak_name = predictor_name(
+            predictor
+        )
+
+
+        sub = full_table[
+            full_table["Peak"]
+            == peak_name
+        ].copy()
+
+
+        if sub.empty:
+
+            continue
+
+
+        lines.append(
+            peak_name
+        )
+
+        lines.append(
+            "-" * len(peak_name)
+        )
+
+
+        lines.append(
+
+            f"Reference peak: "
+            f"{MANUSCRIPT_PEAKS[predictor]:.1f} years"
+
+        )
+
+
+        lines.append("")
+
+
+        # --------------------------------------------------------
+        # Most robust parameters
+        # --------------------------------------------------------
+
+        best = sub.sort_values(
+
+            [
+
+                "Robust_rate",
+                "Maximum_absolute_shift",
+
+            ],
+
+            ascending=[
+
+                False,
+                True,
+
+            ]
+
+        ).head(5)
+
+
+        lines.append(
+            "Most robust parameters:"
+        )
+
+
+        for _, row in best.iterrows():
+
+            lines.append(
+
+                f"  {row['Parameter']}: "
+                f"{row['Robust_rate']:.0%} robust; "
+                f"maximum |shift| = "
+                f"{row['Maximum_absolute_shift']:.2f} y"
+
+            )
+
+
+        lines.append("")
+
+
+        # --------------------------------------------------------
+        # Most influential parameters
+        # --------------------------------------------------------
+
+        worst = sub.sort_values(
+
+            [
+
+                "Robust_rate",
+                "Maximum_absolute_shift",
+
+            ],
+
+            ascending=[
+
+                True,
+                False,
+
+            ]
+
+        ).head(5)
+
+
+        lines.append(
+            "Parameters with greatest influence:"
+        )
+
+
+        for _, row in worst.iterrows():
+
+            lines.append(
+
+                f"  {row['Parameter']}: "
+                f"{row['Robust_rate']:.0%} robust; "
+                f"maximum |shift| = "
+                f"{row['Maximum_absolute_shift']:.2f} y; "
+                f"classification = "
+                f"{row['Robustness']}"
+
+            )
+
+
+        lines.append("")
+
+
+        # --------------------------------------------------------
+        # Overall interpretation
+        # --------------------------------------------------------
+
+        overall_robustness = (
+
+            sub["Robust_rate"]
+            .median()
+
+        )
+
+
+        maximum_shift = (
+
+            sub["Maximum_absolute_shift"]
+            .max()
+
+        )
+
+
+        if overall_robustness >= 0.90:
+
+            conclusion = (
+
+                "The peak is highly robust across the "
+                "tested parameter variations."
+
+            )
+
+        elif overall_robustness >= 0.70:
+
+            conclusion = (
+
+                "The peak is robust across most tested "
+                "parameter variations, with some parameter "
+                "dependence."
+
+            )
+
+        else:
+
+            conclusion = (
+
+                "The peak shows appreciable parameter "
+                "dependence."
+
+            )
+
+
+        lines.append(
+            "Overall interpretation:"
+        )
+
+        lines.append(
+            f"  {conclusion}"
+        )
+
+        lines.append(
+
+            f"  Median parameter-level robustness: "
+            f"{overall_robustness:.0%}"
+
+        )
+
+        lines.append(
+
+            f"  Largest observed peak displacement: "
+            f"{maximum_shift:.2f} years"
+
+        )
+
+        lines.append("")
+
+
+    with open(
+
+        output,
+
+        "w",
+
+        encoding="utf-8"
+
+    ) as file:
+
+        file.write(
+            "\n".join(lines)
+        )
+
+
+    print()
+    print(
+        "Reviewer interpretation:"
+    )
+
+    print(
+        os.path.abspath(
+            output
+        )
+    )
+
+
+# ================================================================
+# 20. WRITE TABLE NOTE
+# ================================================================
+
+def save_table_note():
+
+    output = os.path.join(
+
+        OUTPUT_DIR,
+
+        "Peak_parameter_sensitivity_TABLE_NOTE.txt"
+
+    )
+
+
+    note = (
+
+        "TABLE TITLE\n"
+        "Robustness of reported peak ages to parameter variation\n\n"
+
+        "TABLE NOTE\n"
+        "The manuscript peak age is shown in bold. Detected denotes "
+        "the proportion of tested parameter conditions in which a "
+        "peak was detected. Within ±5 y denotes the proportion in "
+        "which the detected peak remained within ±5 years of the "
+        "manuscript peak. FDR denotes the proportion of tested "
+        "conditions with an FDR-supported peak (FDR < "
+        f"{FDR_THRESHOLD:g}). Peak range shows the minimum–maximum "
+        "detected peak age across the tested parameter values. "
+        "Max Δ denotes the largest absolute displacement from the "
+        "manuscript peak.\n"
+    )
+
+
+    with open(
+
+        output,
+
+        "w",
+
+        encoding="utf-8"
+
+    ) as file:
+
+        file.write(
+            note
+        )
+
+
+    print()
+    print(
+        "Table note:"
+    )
+
+    print(
+        os.path.abspath(
+            output
+        )
+    )
+
+
+# ================================================================
+# 21. MAIN
+# ================================================================
+
+def main():
+
+    warnings.filterwarnings(
+
+        "ignore",
+
+        category=RuntimeWarning
+
+    )
+
+
+    # ------------------------------------------------------------
+    # Load
+    # ------------------------------------------------------------
+
+    df = load_data()
+
+
+    # ------------------------------------------------------------
+    # Validate
+    # ------------------------------------------------------------
+
+    validate_data(
+        df
+    )
+
+
+    # ------------------------------------------------------------
+    # Prepare
+    # ------------------------------------------------------------
+
+    df = prepare_data(
+        df
+    )
+
+
+    # ------------------------------------------------------------
+    # Full parameter analysis
+    # ------------------------------------------------------------
+
+    full_table = create_full_parameter_table(
+        df
+    )
+
+
+    # ------------------------------------------------------------
+    # Compact reviewer table
+    # ------------------------------------------------------------
+
+    compact = create_compact_table(
+        full_table
+    )
+
+
+    # ------------------------------------------------------------
+    # Rank sensitivity
+    # ------------------------------------------------------------
+
+    ranked = rank_parameter_sensitivity(
+        full_table
+    )
+
+
+    # ------------------------------------------------------------
+    # Overall peak summary
+    # ------------------------------------------------------------
+
+    peak_summary = create_peak_summary(
+        df
+    )
+
+
+    # ------------------------------------------------------------
+    # Print compact publication table
+    # ------------------------------------------------------------
+
+    print_publication_table(
+        compact
+    )
+
+
+    # ------------------------------------------------------------
+    # Save publication Markdown
+    # ------------------------------------------------------------
+
+    save_markdown_table(
+        compact
+    )
+
+
+    # ------------------------------------------------------------
+    # Save Word-friendly CSV
+    # ------------------------------------------------------------
+
+    save_word_csv(
+        compact
+    )
+
+
+    # ------------------------------------------------------------
+    # Save CSV + Excel
+    # ------------------------------------------------------------
+
+    save_tables(
+
+        full_table,
+
+        compact,
+
+        ranked,
+
+        peak_summary
+
+    )
+
+
+    # ------------------------------------------------------------
+    # Save reviewer interpretation
+    # ------------------------------------------------------------
+
+    write_reviewer_summary(
+        full_table
+    )
+
+
+    # ------------------------------------------------------------
+    # Save table title/note
+    # ------------------------------------------------------------
+
+    save_table_note()
+
+
+    # ------------------------------------------------------------
+    # Final report
+    # ------------------------------------------------------------
+
+    print()
+    print("=" * 80)
+    print("COMPACT PEAK PARAMETER-SENSITIVITY ANALYSIS COMPLETE")
+    print("=" * 80)
+
+    print()
+    print(
+        "Output directory:"
+    )
+
+    print(
+        os.path.abspath(
+            OUTPUT_DIR
+        )
+    )
+
+    print()
+    print(
+        "Main publication table:"
+    )
+
+    print(
+        os.path.abspath(
+            os.path.join(
+                OUTPUT_DIR,
+                "Peak_parameter_sensitivity_PUBLICATION.md"
+            )
+        )
+    )
+
+    print()
+    print(
+        "Word-friendly CSV:"
+    )
+
+    print(
+        os.path.abspath(
+            os.path.join(
+                OUTPUT_DIR,
+                "Peak_parameter_sensitivity_WORD.csv"
+            )
+        )
+    )
+
+    print()
+    print(
+        "The publication table contains only the key robustness "
+        "metrics needed to assess whether the manuscript peak "
+        "remains stable under parameter variation."
+    )
+
+
+# ================================================================
+# 22. RUN
+# ================================================================
+
+if __name__ == "__main__":
+
+    main()
+    
