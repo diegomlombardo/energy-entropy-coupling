@@ -129,8 +129,6 @@ The codes for the simulation:
 
 The code Simulation_Non_parametric : implements a proof-of-concept generative model of coupled brain, physiological, and energy-like dynamics. Neural oscillator networks interact with simulated heart and respiration signals and a scalar energy-like variable, with network topology, coupling strengths, noise, decay, and age-related modulation varied across simulations. Brain–body coordination is quantified using a non-parametric metric derived from Spearman rank correlations, and the model generates both energy-sensitive and energy-independent synthetic cognition outcomes. The resulting data are evaluated using Spearman rank correlations, permutation tests, bootstrap confidence intervals, and exploratory mediation analysis. The framework is designed as an in-silico model for investigating how structured dependencies can emerge from coupled nonlinear brain–body–energy dynamics, rather than as empirical evidence that energy causes biological cognition.
 
-On last version a code for 
-
 Brain–Body–Cognition Robustness Analysis " Parameter_Sensitivity_Test_Age_Effects" 
 
 This code provides a robustness check for the first version of the Brain–Body analysis, in which brain–body coupling was quantified using phase coherence. The present framework extends that analysis by evaluating a rank-based, non-parametric measure of brain–body association and examining its relationship with cognition across the adult age range.
@@ -152,5 +150,4 @@ Designed for exploring mechanistic hypotheses linking energy, brain dynamics, an
 Modular design allows easy extensions to new network topologies, coupling parameters, and cognitive metrics.
 
 References
-Diego M Lombardo. Cross-Scale Energy Coordination in Brain-Body Systems Supports Cognitive Function Across the Lifespan. 2026. ⟨hal-05565991v2⟩
-https://hal.science/hal-05565991
+Diego-Martin Lombardo. Energy-Driven Structure in Coupled Brain–Body Dynamics, 06 August 2026, PREPRINT (Version 5) available at Research Square [https://doi.org/10.21203/rs.3.rs-9279633/v5]
