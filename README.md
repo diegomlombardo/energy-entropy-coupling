@@ -131,7 +131,7 @@ The code Simulation_Non_parametric : implements a proof-of-concept generative mo
 
 On last version a code for 
 
-Brain–Body–Cognition Robustness Analysis
+Brain–Body–Cognition Robustness Analysis " Parameter_Sensitivity_Test_Age_Effects" 
 
 This code provides a robustness check for the first version of the Brain–Body analysis, in which brain–body coupling was quantified using phase coherence. The present framework extends that analysis by evaluating a rank-based, non-parametric measure of brain–body association and examining its relationship with cognition across the adult age range.
 
