@@ -122,14 +122,26 @@ First the code that runs the main simulation:
 "Main_Resuts_Code_all_models"
 
 Then the one that uses a cognitive proxy based in G factor: " Active_Inference_Confirmation_Mediations_FigS1andS2"
-
  and last the one that use a dynamic and energy independent cognitive proxy with robustness checks: perturbation and ablation " Robust_Model_Perturbation" 
 
-The code: 
+The codes for the simulation: 
 
 
 The code Simulation_Non_parametric : implements a proof-of-concept generative model of coupled brain, physiological, and energy-like dynamics. Neural oscillator networks interact with simulated heart and respiration signals and a scalar energy-like variable, with network topology, coupling strengths, noise, decay, and age-related modulation varied across simulations. Brain–body coordination is quantified using a non-parametric metric derived from Spearman rank correlations, and the model generates both energy-sensitive and energy-independent synthetic cognition outcomes. The resulting data are evaluated using Spearman rank correlations, permutation tests, bootstrap confidence intervals, and exploratory mediation analysis. The framework is designed as an in-silico model for investigating how structured dependencies can emerge from coupled nonlinear brain–body–energy dynamics, rather than as empirical evidence that energy causes biological cognition.
 
+On last version a code for 
+
+Brain–Body–Cognition Robustness Analysis
+
+This code provides a robustness check for the first version of the Brain–Body analysis, in which brain–body coupling was quantified using phase coherence. The present framework extends that analysis by evaluating a rank-based, non-parametric measure of brain–body association and examining its relationship with cognition across the adult age range.
+
+The analysis is designed to assess whether the principal age-dependent findings are stable under alternative modelling choices, rather than being driven by a particular parameterisation, network structure, noise level, or simulation setting. Brain–body associations and their relationships with cognition are evaluated across age using bootstrap confidence intervals, permutation testing, and false-discovery-rate correction.
+
+The framework systematically varies the principal model and simulation parameters and evaluates the stability of the reported age-related peaks across these conditions. This provides a comprehensive sensitivity analysis of the first-generation phase-coherence result and a stronger assessment of whether the underlying Brain–Body–Cognition pattern is robust to methodological variation.
+
+AGE_WINDOW controls the age range included in a given analysis, while FAST_MODE provides a computationally efficient exploratory run or, when disabled, a more extensive publication-style robustness analysis.
+
+All subject-level results, age-dependent association curves, peak estimates, sensitivity analyses, figures, and publication-ready summaries are automatically saved to the BrainBodyEnergy_PeakRobustness_FAST/ directory.
 
 Notes
 
