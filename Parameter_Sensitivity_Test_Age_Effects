@@ -55,15 +55,14 @@ os.makedirs(TABLE_DIR, exist_ok=True)
 # AGE WINDOW
 # ----------------------------------------------------------------
 #
-# CHANGE THIS ONE LINE.
+# 
 #
 # Examples:
 #   AGE_WINDOW = (20, 80)   full adult lifespan
 #   AGE_WINDOW = (40, 70)   Brain-Body peak region
 #   AGE_WINDOW = (15, 35)   Active-Inference peak region
 #
-# If you want BOTH manuscript claims tested simultaneously, use
-# (15, 80).
+
 # ----------------------------------------------------------------
 
 AGE_WINDOW = (15.0, 80.0)
@@ -129,7 +128,7 @@ else:
 
 
 # ================================================================
-# 3. MANUSCRIPT CLAIMS
+# 3. MANUSCRIPT Focus in the main part
 # ================================================================
 
 MANUSCRIPT_PEAKS = {
