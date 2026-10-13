@@ -1,8 +1,8 @@
 Brain–Body–Energy Generative Model
 
-This repository contains a fully parallelized in-silico simulation framework designed to explore how brain–body–energy interactions shape cognition across lifespan-like cohorts. The model is inspired by systems-level theories suggesting that cognitive outcomes emerge not only from pathology, but from how metabolic stability and neural dynamics interact across scales.
+This repository contains a fully parallelized in silico simulation framework designed to explore how brain–body–energy interactions shape cognition across lifespan-like cohorts. The model draws on systems-level theories suggesting that cognitive outcomes emerge not only from pathology, but from how metabolic stability and neural dynamics interact across scales.
 
-This line of research is still preliminary and exploratory, as there is currently no empirical evidence supporting this theory; rather, it serves as a proof of concept.
+This line of research is still preliminary and exploratory, as no empirical evidence supports this theory; it serves as a proof of concept.
  
  Scientific Motivation
 
@@ -143,7 +143,7 @@ All subject-level results, age-dependent association curves, peak estimates, sen
 
 Notes
 
-Fully in-silico — no human or animal data is required.
+Fully in silico — no human or animal data is required.
 
 Designed for exploring mechanistic hypotheses linking energy, brain dynamics, and cognition.
 
@@ -151,3 +151,4 @@ Modular design allows easy extensions to new network topologies, coupling parame
 
 References
 Diego-Martin Lombardo. Energy-Driven Structure in Coupled Brain–Body Dynamics, 06 August 2026, PREPRINT (Version 5) available at Research Square [https://doi.org/10.21203/rs.3.rs-9279633/v5]
+Lombardo, D. (2026). Energy-Driven Structure in Coupled Brain–Body Dynamics [Data set]. Zenodo. https://doi.org/10.5281/zenodo.23114913
