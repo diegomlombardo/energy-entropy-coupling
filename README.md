@@ -151,5 +151,6 @@ Modular design allows easy extensions to new network topologies, coupling parame
 
 References
 Lombardo, D. Energy-driven structure in coupled brain–body dynamics. Sci Rep 16, 38175 (2026). https://doi.org/10.1038/s41598-026-72942-9
+
 Lombardo, D. (2026). Energy-Driven Structure in Coupled Brain–Body Dynamics [Data set]. Zenodo. https://doi.org/10.5281/zenodo.23114913
 https://datasetcatalog.nlm.nih.gov/dataset?q=0003350083
