@@ -14,7 +14,7 @@ The Energetic Scaffold Theory of Cognitive Vulnerability:https://zenodo.org/reco
 
 Here I propose: A) Large-scale brain dynamics are not necessarily constrained by energy balance and physiological inputs.
 
-B) Cognitive performance depends on the alignment between neural metastability and peripheral energy fluctuations, captured by what we call the Brain Body Coupling, under this view. 
+B) Cognitive performance depends on the alignment between neural metastability and peripheral energy fluctuations, captured by what we call the Brain-Body Coupling, under this view. 
 
 Not opposed to active inference and the free energy reduction principle, just complementary; even from the ontogenetic point of view, both are different.
 
@@ -150,6 +150,7 @@ Designed for exploring mechanistic hypotheses linking energy, brain dynamics, an
 Modular design allows easy extensions to new network topologies, coupling parameters, and cognitive metrics.
 
 References
+
 Lombardo, D. Energy-driven structure in coupled brain–body dynamics. Sci Rep 16, 38175 (2026). https://doi.org/10.1038/s41598-026-72942-9
 
 Lombardo, D. (2026). Energy-Driven Structure in Coupled Brain–Body Dynamics [Data set]. Zenodo. https://doi.org/10.5281/zenodo.23114913
